@@ -13,7 +13,7 @@
       Release Email Ingestion
     </h2>
     <p class="subtle">
-      Polls your inbox for deployment emails, opens linked Word docs, and imports deployment file paths.
+      Polls Outlook for deployment emails and imports them into the timeline.
     </p>
     <div class="inline-stats">
       <span><b>{{ 'ON' if release_tracker.is_enabled else 'OFF' }}</b> tracker</span>
@@ -73,14 +73,6 @@
       <label>
         <span>Email Subject Filter</span>
         <input name="subject_filter" value="{{ release_tracker.subject_filter }}" placeholder="Deployment" />
-      </label>
-      <label>
-        <span>Word Doc Link Regex</span>
-        <input name="doc_link_regex" value="{{ release_tracker.doc_link_regex }}" />
-      </label>
-      <label>
-        <span>Deployment Path Regex</span>
-        <input name="deployment_path_regex" value="{{ release_tracker.deployment_path_regex }}" />
       </label>
       <label>
         <span>Poll Interval (seconds)</span>
@@ -163,6 +155,19 @@
       </div>
       {% if release.deployment_file_path %}
       <p class="release-path mono">Deployment file: {{ release.deployment_file_path }}</p>
+      {% elif release.source_uid %}
+      <p class="release-path mono">Deployment file: not set</p>
+      {% endif %}
+      {% if release.source_uid %}
+      <form method="post" action="/releases/{{ release.id }}/path" class="release-path-form">
+        <input
+          name="deployment_file_path"
+          class="release-path-input mono"
+          value="{{ release.deployment_file_path }}"
+          placeholder="Enter deployment file path"
+        />
+        <button type="submit" class="btn">Save Path</button>
+      </form>
       {% endif %}
 
       {% if release.status == 'in-progress' %}

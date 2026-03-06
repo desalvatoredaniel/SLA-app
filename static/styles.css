@@ -980,6 +980,31 @@ body {
   word-break: break-all;
 }
 
+.release-path-form {
+  margin-top: 0.55rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.release-path-input {
+  width: 100%;
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  border-radius: 0.55rem;
+  background: rgba(15, 23, 42, 0.78);
+  color: var(--text-main);
+  padding: 0.5rem 0.62rem;
+  font-family: inherit;
+  font-size: 0.84rem;
+}
+
+.release-path-input:focus {
+  outline: 2px solid rgba(34, 211, 238, 0.35);
+  outline-offset: 1px;
+  border-color: rgba(34, 211, 238, 0.5);
+}
+
 .progress-track {
   margin-top: 0.85rem;
   width: 100%;
@@ -1454,5 +1479,9 @@ body {
     top: 0.65rem;
     right: 0.65rem;
     padding: 0.3rem 0.35rem;
+  }
+
+  .release-path-form {
+    grid-template-columns: 1fr;
   }
 }

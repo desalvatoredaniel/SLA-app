@@ -9,22 +9,18 @@ import re
 import smtplib
 import ssl
 import sys
-import tempfile
 import threading
-import zipfile
 from base64 import b64encode
 from copy import deepcopy
 from datetime import date, datetime, timezone
 from email.message import EmailMessage
-from io import BytesIO
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Any
 from urllib import error as urllib_error
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
 from urllib import request as urllib_request
 from uuid import uuid4
-import xml.etree.ElementTree as ET
 
 from flask import Flask, jsonify, redirect, render_template, request, url_for
 
@@ -93,12 +89,6 @@ RELEASE_TRACKER_DEFAULTS: dict[str, Any] = {
     "outlook_folder_path": os.getenv("SLA_RELEASE_OUTLOOK_FOLDER_PATH", "Inbox").strip() or "Inbox",
     "subject_filter": os.getenv("SLA_RELEASE_SUBJECT_FILTER", "").strip(),
     "sender_filter": os.getenv("SLA_RELEASE_SENDER_FILTER", "").strip(),
-    "doc_link_regex": os.getenv("SLA_RELEASE_DOC_LINK_REGEX", r"https?://[^\s\"'<>]+").strip() or r"https?://[^\s\"'<>]+",
-    "deployment_path_regex": os.getenv(
-        "SLA_RELEASE_DEPLOYMENT_PATH_REGEX",
-        r"(?i)(?:[A-Za-z]:\\[^\s\"'<>\|]+|/[^\s\"'<>]+)\.(?:zip|jar|war|tar|tar\.gz|tgz|yaml|yml|json|xml|txt|sh|ps1)",
-    ).strip()
-    or r"(?i)(?:[A-Za-z]:\\[^\s\"'<>\|]+|/[^\s\"'<>]+)\.(?:zip|jar|war|tar|tar\.gz|tgz|yaml|yml|json|xml|txt|sh|ps1)",
     "only_unseen": _env_bool("SLA_RELEASE_ONLY_UNSEEN", True),
     "mark_seen": _env_bool("SLA_RELEASE_MARK_SEEN", False),
     "poll_interval_seconds": _env_int("SLA_RELEASE_POLL_INTERVAL_SECONDS", 180, 30, 86_400),
@@ -573,12 +563,6 @@ def _normalize_release_tracker_config(raw: dict[str, Any]) -> dict[str, Any]:
         or "Inbox",
         "subject_filter": str(raw.get("subject_filter") or RELEASE_TRACKER_DEFAULTS["subject_filter"]).strip(),
         "sender_filter": str(raw.get("sender_filter") or RELEASE_TRACKER_DEFAULTS["sender_filter"]).strip(),
-        "doc_link_regex": str(raw.get("doc_link_regex") or RELEASE_TRACKER_DEFAULTS["doc_link_regex"]).strip()
-        or str(RELEASE_TRACKER_DEFAULTS["doc_link_regex"]),
-        "deployment_path_regex": str(
-            raw.get("deployment_path_regex") or RELEASE_TRACKER_DEFAULTS["deployment_path_regex"]
-        ).strip()
-        or str(RELEASE_TRACKER_DEFAULTS["deployment_path_regex"]),
         "only_unseen": bool(raw.get("only_unseen", RELEASE_TRACKER_DEFAULTS["only_unseen"])),
         "mark_seen": bool(raw.get("mark_seen", RELEASE_TRACKER_DEFAULTS["mark_seen"])),
         "poll_interval_seconds": _coerce_int(
@@ -622,9 +606,6 @@ def _save_release_tracker_config() -> None:
 def _normalize_release_tracker_event(raw: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
-    path = str(raw.get("deployment_file_path") or "").strip()
-    if not path:
-        return None
 
     return {
         "id": str(raw.get("id") or uuid4().hex),
@@ -636,7 +617,7 @@ def _normalize_release_tracker_event(raw: dict[str, Any]) -> dict[str, Any] | No
         "deployed_at": str(raw.get("deployed_at") or datetime.now().strftime("%Y-%m-%d %H:%M")).strip(),
         "services": _coerce_int(raw.get("services"), 1, 0, 10_000),
         "commits": _coerce_int(raw.get("commits"), 0, 0, 100_000),
-        "deployment_file_path": path,
+        "deployment_file_path": str(raw.get("deployment_file_path") or "").strip(),
         "source_uid": str(raw.get("source_uid") or "").strip(),
         "source_subject": str(raw.get("source_subject") or "").strip(),
         "source_doc_ref": str(raw.get("source_doc_ref") or "").strip(),
@@ -668,12 +649,6 @@ def _save_release_tracker_events() -> None:
     with RELEASE_TRACKER_LOCK:
         payload = json.dumps(release_tracker_events, indent=2)
     RELEASE_TRACKER_EVENTS_PATH.write_text(payload, encoding="utf-8")
-
-
-def _extract_links_from_text(text: str) -> list[str]:
-    if not text:
-        return []
-    return [match.group(0).strip() for match in re.finditer(r"https?://[^\s\"'<>]+", text)]
 
 
 def _is_windows_platform() -> bool:
@@ -737,103 +712,6 @@ def _resolve_outlook_folder(namespace: Any, mailbox_name: str, folder_path: str)
     return current
 
 
-def _extract_doc_refs_from_outlook_item(item: Any, link_pattern: str) -> tuple[list[str], list[tuple[str, bytes]]]:
-    text_segments: list[str] = []
-    for attribute in ("Body", "HTMLBody"):
-        value = str(getattr(item, attribute, "") or "").strip()
-        if value:
-            text_segments.append(value)
-
-    links = _extract_links_from_text("\n".join(text_segments))
-    doc_refs: list[str] = []
-    for link in links:
-        if re.search(link_pattern, link) or ".docx" in link.lower():
-            if link not in doc_refs:
-                doc_refs.append(link)
-
-    attachment_payloads: list[tuple[str, bytes]] = []
-    attachments = getattr(item, "Attachments", None)
-    if attachments is None:
-        return doc_refs, attachment_payloads
-
-    for index in range(1, int(getattr(attachments, "Count", 0)) + 1):
-        attachment = attachments.Item(index)
-        filename = str(getattr(attachment, "FileName", "") or f"attachment-{index}.docx").strip()
-        if not filename.lower().endswith(".docx"):
-            continue
-
-        temp_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(prefix="sla-release-", suffix=".docx", delete=False) as temp_file:
-                temp_path = Path(temp_file.name)
-            attachment.SaveAsFile(str(temp_path))
-            payload = temp_path.read_bytes()
-            if payload:
-                attachment_payloads.append((filename, payload))
-        except Exception:  # noqa: BLE001
-            continue
-        finally:
-            if temp_path is not None:
-                try:
-                    temp_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-
-    return doc_refs, attachment_payloads
-
-
-def _load_docx_bytes_from_ref(reference: str) -> bytes:
-    parsed = urlparse(reference)
-    if parsed.scheme in {"http", "https"}:
-        with urllib_request.urlopen(reference, timeout=30) as response:
-            return response.read()
-
-    if parsed.scheme == "file":
-        local_path = Path(unquote(parsed.path))
-        return local_path.read_bytes()
-
-    local_path = Path(reference).expanduser()
-    if local_path.exists():
-        return local_path.read_bytes()
-
-    raise FileNotFoundError(f"Unsupported or missing doc reference: {reference}")
-
-
-def _extract_text_from_docx_bytes(payload: bytes) -> str:
-    segments: list[str] = []
-    with zipfile.ZipFile(BytesIO(payload)) as archive:
-        xml_files = [name for name in archive.namelist() if name.startswith("word/") and name.endswith(".xml")]
-        for name in xml_files:
-            try:
-                xml_payload = archive.read(name)
-            except KeyError:
-                continue
-            try:
-                root = ET.fromstring(xml_payload)
-            except ET.ParseError:
-                continue
-            for node in root.iter():
-                if node.tag.endswith("}t") and node.text:
-                    segments.append(node.text)
-    return "\n".join(segments)
-
-
-def _extract_deployment_paths_from_text(text: str, path_pattern: str) -> list[str]:
-    if not text:
-        return []
-    try:
-        pattern = re.compile(path_pattern)
-    except re.error:
-        pattern = re.compile(str(RELEASE_TRACKER_DEFAULTS["deployment_path_regex"]))
-
-    paths: list[str] = []
-    for match in pattern.finditer(text):
-        candidate = match.group(0).strip().rstrip(".,;)")
-        if candidate and candidate not in paths:
-            paths.append(candidate)
-    return paths
-
-
 def _infer_release_environment(deployment_path: str) -> str:
     lowered = deployment_path.lower()
     if "stage" in lowered:
@@ -887,8 +765,6 @@ def _sync_release_tracker_win32(
 
     subject_filter = str(config.get("subject_filter") or "").strip().lower()
     sender_filter = str(config.get("sender_filter") or "").strip().lower()
-    doc_link_regex = str(config.get("doc_link_regex") or RELEASE_TRACKER_DEFAULTS["doc_link_regex"])
-    deployment_path_regex = str(config.get("deployment_path_regex") or RELEASE_TRACKER_DEFAULTS["deployment_path_regex"])
     only_unseen = bool(config.get("only_unseen"))
     mark_seen = bool(config.get("mark_seen"))
     only_newer = bool(config.get("only_newer_than_last_run"))
@@ -896,7 +772,7 @@ def _sync_release_tracker_win32(
     folder_path = str(config.get("outlook_folder_path") or "Inbox").strip() or "Inbox"
 
     last_processed_at = _parse_checked_at(str(config.get("last_processed_at") or ""))
-    dedupe_keys = {(str(item.get("source_uid") or ""), str(item.get("deployment_file_path") or "")) for item in existing_events}
+    existing_source_uids = {str(item.get("source_uid") or "").strip() for item in existing_events if item.get("source_uid")}
 
     imported_count = 0
     processed_count = 0
@@ -939,6 +815,8 @@ def _sync_release_tracker_win32(
             source_uid = str(getattr(item, "EntryID", "") or "").strip()
             if not source_uid:
                 source_uid = f"outlook-item-{index}-{int(received_at.timestamp())}"
+            if source_uid in existing_source_uids:
+                continue
 
             processed_count += 1
             if latest_processed_at is None or received_at > latest_processed_at:
@@ -946,53 +824,29 @@ def _sync_release_tracker_win32(
 
             deployed_by = sender_name or sender_email or "Email Ingest"
             deployed_at_label = received_at.strftime("%Y-%m-%d %H:%M")
-            doc_refs, doc_attachments = _extract_doc_refs_from_outlook_item(item, doc_link_regex)
-
-            doc_payloads: list[tuple[str, bytes]] = []
-            for ref in doc_refs:
-                try:
-                    doc_payloads.append((ref, _load_docx_bytes_from_ref(ref)))
-                except Exception as exc:  # noqa: BLE001
-                    parse_errors.append(f"{source_uid}: unable to load doc link {ref} ({exc})")
-            for filename, payload in doc_attachments:
-                doc_payloads.append((filename, payload))
-
-            for source_ref, payload in doc_payloads:
-                try:
-                    doc_text = _extract_text_from_docx_bytes(payload)
-                except Exception as exc:  # noqa: BLE001
-                    parse_errors.append(f"{source_uid}: unable to read {source_ref} ({exc})")
-                    continue
-                deployment_paths = _extract_deployment_paths_from_text(doc_text, deployment_path_regex)
-                for deployment_path in deployment_paths:
-                    dedupe = (source_uid, deployment_path)
-                    if dedupe in dedupe_keys:
-                        continue
-
-                    version_match = re.search(r"v\d+\.\d+\.\d+(?:[-+._A-Za-z0-9]*)?", subject, flags=re.IGNORECASE)
-                    version = version_match.group(0) if version_match else "n/a"
-                    event = {
-                        "id": uuid4().hex,
-                        "version": version,
-                        "name": subject[:160] or "Imported Deployment",
-                        "status": "deployed",
-                        "environment": _infer_release_environment(deployment_path),
-                        "deployed_by": deployed_by[:80],
-                        "deployed_at": deployed_at_label,
-                        "services": 1,
-                        "commits": 0,
-                        "deployment_file_path": deployment_path,
-                        "source_uid": source_uid,
-                        "source_subject": subject,
-                        "source_doc_ref": source_ref,
-                        "imported_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                    normalized_event = _normalize_release_tracker_event(event)
-                    if normalized_event is None:
-                        continue
-                    new_events.append(normalized_event)
-                    dedupe_keys.add(dedupe)
-                    imported_count += 1
+            version_match = re.search(r"v\d+\.\d+\.\d+(?:[-+._A-Za-z0-9]*)?", subject, flags=re.IGNORECASE)
+            version = version_match.group(0) if version_match else "n/a"
+            event = {
+                "id": uuid4().hex,
+                "version": version,
+                "name": subject[:160] or "Imported Deployment",
+                "status": "deployed",
+                "environment": _infer_release_environment(subject),
+                "deployed_by": deployed_by[:80],
+                "deployed_at": deployed_at_label,
+                "services": 0,
+                "commits": 0,
+                "deployment_file_path": "",
+                "source_uid": source_uid,
+                "source_subject": subject,
+                "source_doc_ref": "",
+                "imported_at": datetime.now(timezone.utc).isoformat(),
+            }
+            normalized_event = _normalize_release_tracker_event(event)
+            if normalized_event is not None:
+                new_events.append(normalized_event)
+                existing_source_uids.add(source_uid)
+                imported_count += 1
 
             if mark_seen:
                 try:
@@ -1924,7 +1778,11 @@ def releases() -> str:
     elif notice_code == "release-config-saved":
         release_notice = "Release tracker configuration saved."
     elif notice_code == "release-config-invalid":
-        release_notice = "Release tracker configuration is invalid. Please check required fields and regex patterns."
+        release_notice = "Release tracker configuration is invalid. Please verify Win32 availability and required fields."
+    elif notice_code == "release-path-saved":
+        release_notice = "Release deployment path saved."
+    elif notice_code == "release-path-missing":
+        release_notice = "Release item not found."
 
     return render_template(
         "releases.html",
@@ -1953,29 +1811,10 @@ def update_release_tracker_config() -> Any:
     updated["outlook_folder_path"] = str(request.form.get("outlook_folder_path", "Inbox")).strip() or "Inbox"
     updated["subject_filter"] = str(request.form.get("subject_filter", "")).strip()
     updated["sender_filter"] = str(request.form.get("sender_filter", "")).strip()
-    updated["doc_link_regex"] = (
-        str(request.form.get("doc_link_regex", str(RELEASE_TRACKER_DEFAULTS["doc_link_regex"]))).strip()
-        or str(RELEASE_TRACKER_DEFAULTS["doc_link_regex"])
-    )
-    updated["deployment_path_regex"] = (
-        str(
-            request.form.get(
-                "deployment_path_regex",
-                str(RELEASE_TRACKER_DEFAULTS["deployment_path_regex"]),
-            )
-        ).strip()
-        or str(RELEASE_TRACKER_DEFAULTS["deployment_path_regex"])
-    )
     updated["only_unseen"] = request.form.get("only_unseen") == "on"
     updated["mark_seen"] = request.form.get("mark_seen") == "on"
     updated["only_newer_than_last_run"] = request.form.get("only_newer_than_last_run") == "on"
     updated["poll_interval_seconds"] = _coerce_int(request.form.get("poll_interval_seconds"), 180, 30, 86_400)
-
-    try:
-        re.compile(updated["doc_link_regex"])
-        re.compile(updated["deployment_path_regex"])
-    except re.error:
-        return redirect(url_for("releases", notice="release-config-invalid"))
 
     if updated["is_enabled"]:
         win32_ready, _ = _win32_release_tracker_status()
@@ -2003,6 +1842,24 @@ def sync_releases_now() -> Any:
             )
         )
     return redirect(url_for("releases", notice="release-sync-error"))
+
+
+@app.post("/releases/<release_id>/path")
+def update_release_path(release_id: str) -> Any:
+    deployment_file_path = str(request.form.get("deployment_file_path", "")).strip()
+    with RELEASE_TRACKER_LOCK:
+        for index, existing in enumerate(release_tracker_events):
+            if str(existing.get("id")) != release_id:
+                continue
+            updated = dict(existing)
+            updated["deployment_file_path"] = deployment_file_path
+            normalized = _normalize_release_tracker_event(updated)
+            if normalized is None:
+                return redirect(url_for("releases", notice="release-path-missing"))
+            release_tracker_events[index] = normalized
+            _save_release_tracker_events()
+            return redirect(url_for("releases", notice="release-path-saved"))
+    return redirect(url_for("releases", notice="release-path-missing"))
 
 
 @app.get("/sla-payments")
