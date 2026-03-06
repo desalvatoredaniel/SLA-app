@@ -649,83 +649,141 @@ def _refresh_enabled_server_health_checks(*, force: bool = False, max_age_second
         _save_server_health_checks()
 
 
-def _build_topology_layout(group_sizes: list[tuple[str, int]]) -> dict[str, Any]:
-    active_group_count = len(group_sizes)
-    groups_per_row = max(1, min(3, active_group_count)) if active_group_count else 1
+def _build_topology_layout(group_sizes: list[tuple[str, int]]) -> tuple[dict[str, Any], dict[str, list[tuple[int, int]]]]:
+    total_servers = sum(count for _, count in group_sizes)
+    if not group_sizes:
+        empty_topology = {
+            "board_width": 1400,
+            "board_height": 900,
+            "mainframe_x": 700,
+            "mainframe_y": 450,
+            "throughput": f"{max(0.8, total_servers * 0.12):.1f} GB/s",
+            "group_regions": [],
+            "signature": "empty",
+            "initial_offset_x": 0,
+            "initial_offset_y": -200,
+        }
+        return empty_topology, {}
 
-    lanes_origin_x = 340
-    lanes_origin_y = 72
-    lane_width = 306
-    lane_min_height = 236
-    lane_gap_x = 28
-    lane_gap_y = 30
-
-    node_start_x = 66
-    node_start_y = 96
-    node_gap_x = 112
-    node_gap_y = 108
-    node_bottom_padding = 84
-
-    lane_specs: list[dict[str, Any]] = []
+    group_layouts: list[dict[str, Any]] = []
+    max_local_radius = 160.0
     for group_name, count in group_sizes:
-        columns = 2 if count <= 4 else 3
-        rows = max(1, int(math.ceil(count / max(columns, 1))))
-        lane_height = max(lane_min_height, node_start_y + (rows - 1) * node_gap_y + node_bottom_padding)
-        lane_specs.append(
+        local_points: list[tuple[float, float]] = []
+        for index in range(count):
+            if index == 0:
+                local_points.append((0.0, 0.0))
+                continue
+
+            remainder = index - 1
+            ring = 1
+            while True:
+                slots = ring * 6
+                if remainder < slots:
+                    break
+                remainder -= slots
+                ring += 1
+
+            angle = -(math.pi / 2) + (2 * math.pi * remainder) / max(slots, 1)
+            radius = ring * 78.0
+            local_points.append((radius * math.cos(angle), radius * math.sin(angle)))
+
+        point_x = [x for x, _ in local_points] or [0.0]
+        point_y = [y for _, y in local_points] or [0.0]
+        pad_x = 74.0
+        pad_top = 56.0
+        pad_bottom = 70.0
+
+        local_left = min(point_x) - pad_x
+        local_top = min(point_y) - pad_top
+        local_width = max(250.0, (max(point_x) - min(point_x)) + (pad_x * 2))
+        local_height = max(224.0, (max(point_y) - min(point_y)) + pad_top + pad_bottom)
+        local_radius = max(local_width, local_height) / 2
+        max_local_radius = max(max_local_radius, local_radius)
+
+        group_layouts.append(
             {
                 "group": group_name,
                 "count": count,
-                "columns": columns,
-                "rows": rows,
-                "height": int(lane_height),
+                "local_points": local_points,
+                "local_left": local_left,
+                "local_top": local_top,
+                "local_width": local_width,
+                "local_height": local_height,
             }
         )
 
-    row_count = max(1, int(math.ceil(active_group_count / groups_per_row))) if active_group_count else 1
-    row_heights = [220 for _ in range(row_count)]
-    for index, lane in enumerate(lane_specs):
-        row_index = index // groups_per_row
-        row_heights[row_index] = max(row_heights[row_index], int(lane["height"]))
+    group_count = len(group_layouts)
+    orbit_x = 290.0 + max_local_radius + max(0.0, (group_count - 4) * 22.0)
+    orbit_y = 195.0 + max_local_radius * 0.72
 
-    row_tops: list[int] = []
-    cursor = lanes_origin_y
-    for row_height in row_heights:
-        row_tops.append(cursor)
-        cursor += row_height + lane_gap_y
+    mainframe_x0 = 0.0
+    mainframe_y0 = 0.0
 
-    lane_area_bottom = row_tops[-1] + row_heights[-1] if row_tops else lanes_origin_y + 220
-    board_width = max(1400, lanes_origin_x + groups_per_row * lane_width + (groups_per_row - 1) * lane_gap_x + 120)
-    board_height = max(900, lane_area_bottom + 120)
+    group_regions_pre: list[dict[str, Any]] = []
+    group_slots_pre: dict[str, list[tuple[float, float]]] = {}
+    for group_index, layout in enumerate(group_layouts):
+        if group_count == 1:
+            angle = 0.0
+        else:
+            angle = -(math.pi / 2) + (2 * math.pi * group_index) / group_count
 
-    mainframe_x = 170
-    lane_area_mid = lanes_origin_y + ((lane_area_bottom - lanes_origin_y) / 2)
-    mainframe_y = int(max(260, min(board_height - 180, lane_area_mid)))
+        center_x = mainframe_x0 + orbit_x * math.cos(angle)
+        center_y = mainframe_y0 + orbit_y * math.sin(angle)
+        points = [(center_x + dx, center_y + dy) for dx, dy in layout["local_points"]]
+        group_slots_pre[layout["group"]] = points
+
+        group_regions_pre.append(
+            {
+                "group": layout["group"],
+                "count": layout["count"],
+                "left": center_x + float(layout["local_left"]),
+                "top": center_y + float(layout["local_top"]),
+                "width": float(layout["local_width"]),
+                "height": float(layout["local_height"]),
+            }
+        )
+
+    min_x = mainframe_x0 - 170
+    max_x = mainframe_x0 + 170
+    min_y = mainframe_y0 - 180
+    max_y = mainframe_y0 + 180
+    for region in group_regions_pre:
+        min_x = min(min_x, float(region["left"]))
+        min_y = min(min_y, float(region["top"]))
+        max_x = max(max_x, float(region["left"]) + float(region["width"]))
+        max_y = max(max_y, float(region["top"]) + float(region["height"]))
+
+    margin = 120.0
+    content_width = (max_x - min_x) + (margin * 2)
+    content_height = (max_y - min_y) + (margin * 2)
+    board_width = max(1400, int(math.ceil(content_width)))
+    board_height = max(900, int(math.ceil(content_height)))
+
+    shift_x = margin - min_x + max(0.0, (board_width - content_width) / 2)
+    shift_y = margin - min_y + max(0.0, (board_height - content_height) / 2)
 
     group_regions: list[dict[str, Any]] = []
-    for index, lane in enumerate(lane_specs):
-        row_index = index // groups_per_row
-        col_index = index % groups_per_row
-        left = lanes_origin_x + col_index * (lane_width + lane_gap_x)
-        top = row_tops[row_index]
+    for region in group_regions_pre:
         group_regions.append(
             {
-                "group": lane["group"],
-                "count": lane["count"],
-                "left": int(left),
-                "top": int(top),
-                "width": int(lane_width),
-                "height": int(lane["height"]),
-                "columns": int(lane["columns"]),
-                "rows": int(lane["rows"]),
-                "node_origin_x": int(left + node_start_x),
-                "node_origin_y": int(top + node_start_y),
-                "node_gap_x": int(node_gap_x),
-                "node_gap_y": int(node_gap_y),
+                "group": str(region["group"]),
+                "count": int(region["count"]),
+                "left": int(round(float(region["left"]) + shift_x)),
+                "top": int(round(float(region["top"]) + shift_y)),
+                "width": int(round(float(region["width"]))),
+                "height": int(round(float(region["height"]))),
             }
         )
 
+    group_slots: dict[str, list[tuple[int, int]]] = {}
+    for group_name, points in group_slots_pre.items():
+        group_slots[group_name] = [(int(round(x + shift_x)), int(round(y + shift_y))) for x, y in points]
+
+    mainframe_x = int(round(mainframe_x0 + shift_x))
+    mainframe_y = int(round(mainframe_y0 + shift_y))
+
     signature_parts = [
-        f"{region['group']}:{region['count']}:{region['left']}:{region['top']}:{region['height']}:{region['columns']}"
+        f"{region['group']}:{region['count']}:{region['left']}:{region['top']}:{region['width']}:{region['height']}"
         for region in group_regions
     ]
     topology_signature = (
@@ -733,24 +791,26 @@ def _build_topology_layout(group_sizes: list[tuple[str, int]]) -> dict[str, Any]
         + "|".join(signature_parts)
     )
 
-    return {
+    topology = {
         "board_width": int(board_width),
         "board_height": int(board_height),
         "mainframe_x": int(mainframe_x),
         "mainframe_y": int(mainframe_y),
-        "throughput": f"{max(0.8, sum(count for _, count in group_sizes) * 0.12):.1f} GB/s",
+        "throughput": f"{max(0.8, total_servers * 0.12):.1f} GB/s",
         "group_regions": group_regions,
         "signature": topology_signature,
         "initial_offset_x": 0,
         "initial_offset_y": -max(0, int(mainframe_y) - 250),
     }
+    return topology, group_slots
 
 
 def _build_live_servers_from_checks() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     with SERVER_HEALTH_LOCK:
         checks = [deepcopy(check) for check in server_health_checks]
     if not checks:
-        return [], _build_topology_layout([])
+        empty_topology, _ = _build_topology_layout([])
+        return [], empty_topology
 
     group_rank = {group: index for index, group in enumerate(SERVER_GROUP_OPTIONS)}
     checks.sort(key=lambda check: (group_rank.get(check.get("server_group", ""), 999), str(check.get("name", "")).lower()))
@@ -762,23 +822,19 @@ def _build_live_servers_from_checks() -> tuple[list[dict[str, Any]], dict[str, A
 
     active_groups = [group for group in SERVER_GROUP_OPTIONS if grouped_checks[group]]
     group_sizes = [(group, len(grouped_checks[group])) for group in active_groups]
-    topology = _build_topology_layout(group_sizes)
-    group_region_by_name = {region["group"]: region for region in topology["group_regions"]}
+    topology, group_slots = _build_topology_layout(group_sizes)
 
     nodes: list[dict[str, Any]] = []
     for group_index, group_name in enumerate(active_groups):
-        group_region = group_region_by_name.get(group_name)
-        if group_region is None:
-            continue
-
         group_checks = grouped_checks[group_name]
-        group_columns = max(1, int(group_region["columns"]))
+        slots = group_slots.get(group_name) or []
 
         for local_index, check in enumerate(group_checks):
-            local_row = local_index // group_columns
-            local_col = local_index % group_columns
-            x = int(int(group_region["node_origin_x"]) + local_col * int(group_region["node_gap_x"]))
-            y = int(int(group_region["node_origin_y"]) + local_row * int(group_region["node_gap_y"]))
+            if local_index < len(slots):
+                x, y = slots[local_index]
+            else:
+                x = int(topology["mainframe_x"] + 220 + local_index * 20)
+                y = int(topology["mainframe_y"] + group_index * 26)
 
             last_check = check.get("last_check") or {}
             is_up = bool(last_check.get("is_up"))
