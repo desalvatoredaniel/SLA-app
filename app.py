@@ -678,8 +678,8 @@ def _build_topology_layout(group_sizes: list[tuple[str, int]]) -> tuple[dict[str
         else:
             columns = 5
         rows = max(1, int(math.ceil(count / columns)))
-        gap_x = 144.0
-        gap_y = 126.0
+        gap_x = 156.0
+        gap_y = 136.0
 
         grid_width = (columns - 1) * gap_x
         grid_height = (rows - 1) * gap_y
