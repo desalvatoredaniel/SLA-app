@@ -82,10 +82,24 @@
       data-offset-y="{{ topology.initial_offset_y }}"
       data-board-width="{{ topology.board_width }}"
       data-board-height="{{ topology.board_height }}"
+      data-topology-signature="{{ topology.signature }}"
       style="width: {{ topology.board_width }}px; height: {{ topology.board_height }}px"
     >
       <div class="grid-overlay"></div>
       <div id="signal-layer" class="signal-layer"></div>
+
+      {% for region in topology.group_regions %}
+      <article
+        class="network-group-lane"
+        data-group-lane
+        style="left: {{ region.left }}px; top: {{ region.top }}px; width: {{ region.width }}px; height: {{ region.height }}px"
+      >
+        <div class="network-group-lane-header">
+          <span class="mono">{{ region.group }}</span>
+          <span class="network-group-count mono">{{ region.count }} servers</span>
+        </div>
+      </article>
+      {% endfor %}
 
       <article
         class="mainframe"

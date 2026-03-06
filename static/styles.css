@@ -276,6 +276,34 @@ body {
   pointer-events: none;
 }
 
+.network-group-lane {
+  position: absolute;
+  border: 1px solid rgba(34, 211, 238, 0.34);
+  border-radius: 0.9rem;
+  background: linear-gradient(165deg, rgba(15, 23, 42, 0.34), rgba(2, 6, 23, 0.18));
+  box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.08);
+  pointer-events: none;
+}
+
+.network-group-lane-header {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 10px;
+  color: #67e8f9;
+  letter-spacing: 0.04em;
+}
+
+.network-group-count {
+  color: rgba(186, 230, 253, 0.88);
+  font-size: 9px;
+}
+
 .signal-line {
   position: absolute;
   height: 2px;
@@ -354,6 +382,7 @@ body {
   position: absolute;
   transform: translate(-50%, -50%);
   pointer-events: none;
+  z-index: 2;
 }
 
 .ring {
@@ -451,6 +480,7 @@ body {
   padding: 0.46rem;
   backdrop-filter: blur(4px);
   animation: node-flicker 2.8s ease-in-out infinite;
+  z-index: 3;
 }
 
 .server-node.healthy {

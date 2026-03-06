@@ -300,6 +300,7 @@
         const hasTopologyChange =
           incomingIds.size !== currentIds.length ||
           currentIds.some((id) => !incomingIds.has(id)) ||
+          (topology && String(board.dataset.topologySignature || '') !== String(topology.signature || '')) ||
           (topology &&
             (Number(board.dataset.boardWidth || 0) !== Number(topology.board_width || 0) ||
               Number(board.dataset.boardHeight || 0) !== Number(topology.board_height || 0) ||

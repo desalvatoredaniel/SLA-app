@@ -649,36 +649,100 @@ def _refresh_enabled_server_health_checks(*, force: bool = False, max_age_second
         _save_server_health_checks()
 
 
-def _build_topology_layout(server_count: int) -> dict[str, Any]:
-    columns = min(8, max(4, int(math.ceil(math.sqrt(max(server_count, 1))))))
-    rows = max(1, int(math.ceil(server_count / columns))) if server_count else 1
+def _build_topology_layout(group_sizes: list[tuple[str, int]]) -> dict[str, Any]:
+    active_group_count = len(group_sizes)
+    groups_per_row = max(1, min(3, active_group_count)) if active_group_count else 1
 
-    cell_x = 152
-    cell_y = 116
-    node_origin_x = 360
-    node_origin_y = 120
-    grid_height = max(0, (rows - 1) * cell_y)
+    lanes_origin_x = 340
+    lanes_origin_y = 72
+    lane_width = 306
+    lane_min_height = 236
+    lane_gap_x = 28
+    lane_gap_y = 30
 
-    board_width = max(1400, node_origin_x + max(0, columns - 1) * cell_x + 280)
-    board_height = max(900, node_origin_y + grid_height + 260)
+    node_start_x = 66
+    node_start_y = 96
+    node_gap_x = 112
+    node_gap_y = 108
+    node_bottom_padding = 84
+
+    lane_specs: list[dict[str, Any]] = []
+    for group_name, count in group_sizes:
+        columns = 2 if count <= 4 else 3
+        rows = max(1, int(math.ceil(count / max(columns, 1))))
+        lane_height = max(lane_min_height, node_start_y + (rows - 1) * node_gap_y + node_bottom_padding)
+        lane_specs.append(
+            {
+                "group": group_name,
+                "count": count,
+                "columns": columns,
+                "rows": rows,
+                "height": int(lane_height),
+            }
+        )
+
+    row_count = max(1, int(math.ceil(active_group_count / groups_per_row))) if active_group_count else 1
+    row_heights = [220 for _ in range(row_count)]
+    for index, lane in enumerate(lane_specs):
+        row_index = index // groups_per_row
+        row_heights[row_index] = max(row_heights[row_index], int(lane["height"]))
+
+    row_tops: list[int] = []
+    cursor = lanes_origin_y
+    for row_height in row_heights:
+        row_tops.append(cursor)
+        cursor += row_height + lane_gap_y
+
+    lane_area_bottom = row_tops[-1] + row_heights[-1] if row_tops else lanes_origin_y + 220
+    board_width = max(1400, lanes_origin_x + groups_per_row * lane_width + (groups_per_row - 1) * lane_gap_x + 120)
+    board_height = max(900, lane_area_bottom + 120)
 
     mainframe_x = 170
-    mainframe_y = int(max(300, node_origin_y + (grid_height / 2))) if server_count else board_height // 2
-    mainframe_y = max(180, min(board_height - 180, mainframe_y))
+    lane_area_mid = lanes_origin_y + ((lane_area_bottom - lanes_origin_y) / 2)
+    mainframe_y = int(max(260, min(board_height - 180, lane_area_mid)))
+
+    group_regions: list[dict[str, Any]] = []
+    for index, lane in enumerate(lane_specs):
+        row_index = index // groups_per_row
+        col_index = index % groups_per_row
+        left = lanes_origin_x + col_index * (lane_width + lane_gap_x)
+        top = row_tops[row_index]
+        group_regions.append(
+            {
+                "group": lane["group"],
+                "count": lane["count"],
+                "left": int(left),
+                "top": int(top),
+                "width": int(lane_width),
+                "height": int(lane["height"]),
+                "columns": int(lane["columns"]),
+                "rows": int(lane["rows"]),
+                "node_origin_x": int(left + node_start_x),
+                "node_origin_y": int(top + node_start_y),
+                "node_gap_x": int(node_gap_x),
+                "node_gap_y": int(node_gap_y),
+            }
+        )
+
+    signature_parts = [
+        f"{region['group']}:{region['count']}:{region['left']}:{region['top']}:{region['height']}:{region['columns']}"
+        for region in group_regions
+    ]
+    topology_signature = (
+        f"bw:{board_width}|bh:{board_height}|mx:{mainframe_x}|my:{mainframe_y}|"
+        + "|".join(signature_parts)
+    )
 
     return {
-        "board_width": board_width,
-        "board_height": board_height,
-        "mainframe_x": mainframe_x,
-        "mainframe_y": mainframe_y,
-        "throughput": f"{max(0.8, server_count * 0.12):.1f} GB/s",
-        "columns": columns,
-        "cell_x": cell_x,
-        "cell_y": cell_y,
-        "node_origin_x": node_origin_x,
-        "node_origin_y": node_origin_y,
+        "board_width": int(board_width),
+        "board_height": int(board_height),
+        "mainframe_x": int(mainframe_x),
+        "mainframe_y": int(mainframe_y),
+        "throughput": f"{max(0.8, sum(count for _, count in group_sizes) * 0.12):.1f} GB/s",
+        "group_regions": group_regions,
+        "signature": topology_signature,
         "initial_offset_x": 0,
-        "initial_offset_y": -max(0, mainframe_y - 250),
+        "initial_offset_y": -max(0, int(mainframe_y) - 250),
     }
 
 
@@ -686,74 +750,88 @@ def _build_live_servers_from_checks() -> tuple[list[dict[str, Any]], dict[str, A
     with SERVER_HEALTH_LOCK:
         checks = [deepcopy(check) for check in server_health_checks]
     if not checks:
-        return [], _build_topology_layout(0)
+        return [], _build_topology_layout([])
 
     group_rank = {group: index for index, group in enumerate(SERVER_GROUP_OPTIONS)}
     checks.sort(key=lambda check: (group_rank.get(check.get("server_group", ""), 999), str(check.get("name", "")).lower()))
 
     now = datetime.now(timezone.utc)
-    topology = _build_topology_layout(len(checks))
+    grouped_checks: dict[str, list[dict[str, Any]]] = {group: [] for group in SERVER_GROUP_OPTIONS}
+    for check in checks:
+        grouped_checks[_normalize_server_group(check.get("server_group"))].append(check)
+
+    active_groups = [group for group in SERVER_GROUP_OPTIONS if grouped_checks[group]]
+    group_sizes = [(group, len(grouped_checks[group])) for group in active_groups]
+    topology = _build_topology_layout(group_sizes)
+    group_region_by_name = {region["group"]: region for region in topology["group_regions"]}
 
     nodes: list[dict[str, Any]] = []
-    for index, check in enumerate(checks):
-        row = index // int(topology["columns"])
-        col = index % int(topology["columns"])
-        stagger_x = 12 if row % 2 else 0
-        x = int(int(topology["node_origin_x"]) + col * int(topology["cell_x"]) + stagger_x)
-        y = int(int(topology["node_origin_y"]) + row * int(topology["cell_y"]))
+    for group_index, group_name in enumerate(active_groups):
+        group_region = group_region_by_name.get(group_name)
+        if group_region is None:
+            continue
 
-        last_check = check.get("last_check") or {}
-        is_up = bool(last_check.get("is_up"))
-        checked_at = _parse_checked_at(last_check.get("checked_at"))
-        checked_recently = bool(checked_at and (now - checked_at).total_seconds() <= 8)
-        enabled = bool(check.get("is_enabled"))
+        group_checks = grouped_checks[group_name]
+        group_columns = max(1, int(group_region["columns"]))
 
-        if not enabled:
-            status = "warning"
-        elif not last_check:
-            status = "warning"
-        elif is_up:
-            status = "healthy"
-        else:
-            status = "critical"
+        for local_index, check in enumerate(group_checks):
+            local_row = local_index // group_columns
+            local_col = local_index % group_columns
+            x = int(int(group_region["node_origin_x"]) + local_col * int(group_region["node_gap_x"]))
+            y = int(int(group_region["node_origin_y"]) + local_row * int(group_region["node_gap_y"]))
 
-        response_time = last_check.get("response_ms")
-        if response_time is None:
-            response_time = 0
-        try:
-            response_time_value = int(round(float(response_time)))
-        except (TypeError, ValueError):
-            response_time_value = 0
+            last_check = check.get("last_check") or {}
+            is_up = bool(last_check.get("is_up"))
+            checked_at = _parse_checked_at(last_check.get("checked_at"))
+            checked_recently = bool(checked_at and (now - checked_at).total_seconds() <= 8)
+            enabled = bool(check.get("is_enabled"))
 
-        total_checks = int(check.get("total_checks") or 0)
-        successful_checks = int(check.get("successful_checks") or 0)
-        uptime = round((successful_checks / total_checks) * 100, 1) if total_checks > 0 else 0.0
-        ping_color = "#22d3ee" if status == "healthy" else "#facc15" if status == "warning" else "#f87171"
-        ping_duration = round(max(0.55, min(2.8, (response_time_value or 500) / 420)), 2)
-        ping_delay = round((index % 7) * 0.09, 2)
+            if not enabled:
+                status = "warning"
+            elif not last_check:
+                status = "warning"
+            elif is_up:
+                status = "healthy"
+            else:
+                status = "critical"
 
-        nodes.append(
-            {
-                "id": check["id"],
-                "name": check["name"],
-                "server_group": _normalize_server_group(check.get("server_group")),
-                "url": check["url"],
-                "is_enabled": enabled,
-                "status": status,
-                "response_time": response_time_value,
-                "uptime": uptime,
-                "x": x,
-                "y": y,
-                "last_check": last_check if last_check else None,
-                "last_ping_at": last_check.get("checked_at"),
-                "last_ping_display": _format_last_ping_display(last_check.get("checked_at")),
-                "http_status": last_check.get("http_status"),
-                "animate_ping": bool(enabled and checked_recently),
-                "ping_color": ping_color,
-                "ping_duration_seconds": ping_duration,
-                "ping_delay_seconds": ping_delay,
-            }
-        )
+            response_time = last_check.get("response_ms")
+            if response_time is None:
+                response_time = 0
+            try:
+                response_time_value = int(round(float(response_time)))
+            except (TypeError, ValueError):
+                response_time_value = 0
+
+            total_checks = int(check.get("total_checks") or 0)
+            successful_checks = int(check.get("successful_checks") or 0)
+            uptime = round((successful_checks / total_checks) * 100, 1) if total_checks > 0 else 0.0
+            ping_color = "#22d3ee" if status == "healthy" else "#facc15" if status == "warning" else "#f87171"
+            ping_duration = round(max(0.55, min(2.8, (response_time_value or 500) / 420)), 2)
+            ping_delay = round((local_index % 6) * 0.08 + (group_index % 3) * 0.07, 2)
+
+            nodes.append(
+                {
+                    "id": check["id"],
+                    "name": check["name"],
+                    "server_group": group_name,
+                    "url": check["url"],
+                    "is_enabled": enabled,
+                    "status": status,
+                    "response_time": response_time_value,
+                    "uptime": uptime,
+                    "x": x,
+                    "y": y,
+                    "last_check": last_check if last_check else None,
+                    "last_ping_at": last_check.get("checked_at"),
+                    "last_ping_display": _format_last_ping_display(last_check.get("checked_at")),
+                    "http_status": last_check.get("http_status"),
+                    "animate_ping": bool(enabled and checked_recently),
+                    "ping_color": ping_color,
+                    "ping_duration_seconds": ping_duration,
+                    "ping_delay_seconds": ping_delay,
+                }
+            )
 
     return nodes, topology
 
