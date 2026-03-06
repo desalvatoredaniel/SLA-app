@@ -79,6 +79,15 @@
       <div class="grid-overlay"></div>
       <div id="signal-layer" class="signal-layer"></div>
 
+      {% for marker in group_markers %}
+      <div
+        class="network-group-marker mono"
+        style="left: {{ marker.x + 250 }}px; top: {{ marker.y + 250 }}px"
+      >
+        {{ marker.group }} ({{ marker.count }})
+      </div>
+      {% endfor %}
+
       <article
         class="mainframe"
         data-mainframe
@@ -124,6 +133,7 @@
         </div>
         <p class="mono node-name">{{ server.name }}</p>
         <div class="mono node-meta">
+          <span data-node-group>{{ server.server_group }}</span>
           <span data-node-response>{% if server.last_check %}{{ server.response_time }}ms{% else %}n/a{% endif %}</span>
           <span data-node-uptime>{{ server.uptime }}% uptime</span>
           {% if not server.is_enabled %}
@@ -149,26 +159,32 @@
 
 <section class="panel">
   <h2 class="section-title">Server Details</h2>
-  <div class="list-stack">
-    {% for server in servers %}
-    <article class="list-row" data-server-row data-server-id="{{ server.id }}">
-      <div class="row-name">
-        <span class="status-dot {{ server.status }}" data-row-dot></span>
-        <span class="mono">{{ server.name }}</span>
-        {% if not server.is_enabled %}<span class="status-pill warning" data-row-enabled-pill>DISABLED</span>{% else %}<span class="status-pill healthy hidden" data-row-enabled-pill>DISABLED</span>{% endif %}
+  {% if grouped_servers %}
+    {% for group_block in grouped_servers %}
+    <section class="group-block">
+      <h3 class="group-title mono">{{ group_block.group }}</h3>
+      <div class="list-stack">
+        {% for server in group_block.servers %}
+        <article class="list-row" data-server-row data-server-id="{{ server.id }}">
+          <div class="row-name">
+            <span class="status-dot {{ server.status }}" data-row-dot></span>
+            <span class="mono">{{ server.name }}</span>
+            {% if not server.is_enabled %}<span class="status-pill warning" data-row-enabled-pill>DISABLED</span>{% else %}<span class="status-pill healthy hidden" data-row-enabled-pill>DISABLED</span>{% endif %}
+          </div>
+          <div class="row-meta">
+            <span><b data-row-response>{% if server.last_check %}{{ server.response_time }}ms{% else %}n/a{% endif %}</b> response</span>
+            <span><b data-row-uptime>{{ server.uptime }}%</b> uptime</span>
+            <span class="mono">{{ server.url }}</span>
+            <span class="status-pill {{ server.status }}" data-row-status-pill>{{ server.status|upper }}</span>
+            <span class="mono" data-row-last-ping>last ping: {{ server.last_ping_display }}</span>
+          </div>
+        </article>
+        {% endfor %}
       </div>
-      <div class="row-meta">
-        <span><b data-row-response>{% if server.last_check %}{{ server.response_time }}ms{% else %}n/a{% endif %}</b> response</span>
-        <span><b data-row-uptime>{{ server.uptime }}%</b> uptime</span>
-        <span class="mono">{{ server.url }}</span>
-        <span class="status-pill {{ server.status }}" data-row-status-pill>{{ server.status|upper }}</span>
-        <span class="mono" data-row-last-ping>last ping: {{ server.last_ping_display }}</span>
-      </div>
-    </article>
+    </section>
     {% endfor %}
-    {% if not servers %}
+  {% else %}
     <p class="subtle">No servers configured. Go to Config and add your server URL checks.</p>
-    {% endif %}
-  </div>
+  {% endif %}
 </section>
 {% endblock %}

@@ -276,6 +276,20 @@ body {
   pointer-events: none;
 }
 
+.network-group-marker {
+  position: absolute;
+  transform: translate(-50%, -145%);
+  border: 1px solid rgba(103, 232, 249, 0.35);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.82);
+  color: #67e8f9;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 0.18rem 0.52rem;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 .signal-line {
   position: absolute;
   height: 2px;
@@ -509,6 +523,10 @@ body {
   font-size: 9px;
 }
 
+.node-meta [data-node-group] {
+  color: #67e8f9;
+}
+
 .node-meta .last-ping {
   color: rgba(191, 219, 254, 0.9);
 }
@@ -584,6 +602,21 @@ body {
 .row-meta .mono {
   color: rgba(191, 219, 254, 0.85);
   font-size: 0.74rem;
+}
+
+.group-block {
+  margin-top: 1rem;
+}
+
+.group-block:first-of-type {
+  margin-top: 0.5rem;
+}
+
+.group-title {
+  margin: 0 0 0.45rem;
+  color: #67e8f9;
+  font-size: 0.86rem;
+  letter-spacing: 0.06em;
 }
 
 .status-pill {

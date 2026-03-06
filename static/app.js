@@ -143,6 +143,11 @@
         lastPingNode.textContent = `last ping: ${formatLastPing(server.last_ping_at)}`;
       }
 
+      const nodeGroup = node.querySelector('[data-node-group]');
+      if (nodeGroup) {
+        nodeGroup.textContent = server.server_group || '';
+      }
+
       const row = serverRows.get(serverId);
       if (!row) {
         return;
@@ -273,10 +278,32 @@
 
         const payload = await response.json();
         const servers = Array.isArray(payload.servers) ? payload.servers : [];
+        const markers = Array.isArray(payload.group_markers) ? payload.group_markers : [];
         const incomingIds = new Set(servers.map((server) => String(server.id)));
         const currentIds = Array.from(serverNodes.keys());
+        const markerElements = Array.from(document.querySelectorAll('.network-group-marker'));
+
         const hasTopologyChange =
-          incomingIds.size !== currentIds.length || currentIds.some((id) => !incomingIds.has(id));
+          incomingIds.size !== currentIds.length ||
+          currentIds.some((id) => !incomingIds.has(id)) ||
+          servers.some((server) => {
+            const node = serverNodes.get(String(server.id));
+            if (!node) {
+              return true;
+            }
+            const expectedX = String(Number(server.x) + 250);
+            const expectedY = String(Number(server.y) + 250);
+            return node.dataset.x !== expectedX || node.dataset.y !== expectedY;
+          }) ||
+          markers.length !== markerElements.length ||
+          markers.some((marker, idx) => {
+            const el = markerElements[idx];
+            if (!el) {
+              return true;
+            }
+            const expectedText = `${marker.group} (${marker.count})`;
+            return el.textContent.trim() !== expectedText;
+          });
 
         if (hasTopologyChange) {
           window.location.reload();

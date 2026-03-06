@@ -60,6 +60,14 @@
         <input name="name" required placeholder="API Gateway Primary" />
       </label>
       <label>
+        <span>Server Group</span>
+        <select name="server_group">
+          {% for option in server_group_options %}
+          <option value="{{ option }}">{{ option }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
         <span>URL</span>
         <input name="url" type="url" required placeholder="https://api.example.com/health" />
       </label>
@@ -155,6 +163,14 @@
           <label>
             <span>Name</span>
             <input name="name" required value="{{ check.name }}" />
+          </label>
+          <label>
+            <span>Server Group</span>
+            <select name="server_group">
+              {% for option in server_group_options %}
+              <option value="{{ option }}" {% if check.server_group == option %}selected{% endif %}>{{ option }}</option>
+              {% endfor %}
+            </select>
           </label>
           <label>
             <span>URL</span>
