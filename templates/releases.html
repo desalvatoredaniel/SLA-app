@@ -141,6 +141,9 @@
             </span>
             <h3>{{ release.version }}</h3>
             <span class="env-pill {{ release.environment }}">{{ release.environment }}</span>
+            {% if release.deployment_step %}
+            <span class="token">{{ release.deployment_step }}</span>
+            {% endif %}
           </div>
           <p class="subtle">{{ release.name }}</p>
         </div>

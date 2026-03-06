@@ -33,6 +33,7 @@ SERVER_HEALTH_CONFIG_PATH = Path(app.instance_path) / "server_health_checks.json
 RELEASE_TRACKER_CONFIG_PATH = Path(app.instance_path) / "release_tracker_config.json"
 RELEASE_TRACKER_EVENTS_PATH = Path(app.instance_path) / "release_tracker_events.json"
 ENV_PATH = Path(os.getenv("SLA_APP_ENV_PATH", ".env"))
+RELEASE_REF_PATTERN = re.compile(r"\b(?:R\d+(?:\.\d+)+|V\d+(?:\.\d+){1,3}(?:[-+._A-Za-z0-9]*)?)\b", re.IGNORECASE)
 
 try:
     HEALTH_CHECK_INTERVAL_SECONDS = max(2.0, min(300.0, float(os.getenv("SLA_HEALTH_CHECK_INTERVAL_SECONDS", "15"))))
@@ -606,19 +607,37 @@ def _save_release_tracker_config() -> None:
 def _normalize_release_tracker_event(raw: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
+    source_uids_raw = raw.get("source_uids")
+    source_uids: list[str] = []
+    if isinstance(source_uids_raw, list):
+        source_uids = [str(value).strip() for value in source_uids_raw if str(value).strip()]
+    source_uid = str(raw.get("source_uid") or "").strip()
+    if source_uid and source_uid not in source_uids:
+        source_uids.append(source_uid)
+    source_uids = source_uids[-50:]
+
+    release_key = str(raw.get("release_key") or "").strip()
+    if not release_key:
+        version_value = str(raw.get("version") or "").strip()
+        if version_value and version_value.lower() != "n/a":
+            release_key = version_value
 
     return {
         "id": str(raw.get("id") or uuid4().hex),
         "version": str(raw.get("version") or "n/a").strip() or "n/a",
+        "release_key": release_key,
         "name": str(raw.get("name") or "Imported Deployment").strip() or "Imported Deployment",
         "status": str(raw.get("status") or "deployed").strip() or "deployed",
         "environment": str(raw.get("environment") or "production").strip() or "production",
+        "deployment_step": str(raw.get("deployment_step") or "").strip().upper(),
         "deployed_by": str(raw.get("deployed_by") or "Email Ingest").strip() or "Email Ingest",
         "deployed_at": str(raw.get("deployed_at") or datetime.now().strftime("%Y-%m-%d %H:%M")).strip(),
         "services": _coerce_int(raw.get("services"), 1, 0, 10_000),
         "commits": _coerce_int(raw.get("commits"), 0, 0, 100_000),
         "deployment_file_path": str(raw.get("deployment_file_path") or "").strip(),
         "source_uid": str(raw.get("source_uid") or "").strip(),
+        "source_uids": source_uids,
+        "source_thread_id": str(raw.get("source_thread_id") or "").strip(),
         "source_subject": str(raw.get("source_subject") or "").strip(),
         "source_doc_ref": str(raw.get("source_doc_ref") or "").strip(),
         "imported_at": str(raw.get("imported_at") or datetime.now(timezone.utc).isoformat()).strip(),
@@ -712,6 +731,63 @@ def _resolve_outlook_folder(namespace: Any, mailbox_name: str, folder_path: str)
     return current
 
 
+def _canonical_release_key(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    return re.sub(r"\s+", "", raw)
+
+
+def _extract_release_reference(text: str) -> str:
+    match = RELEASE_REF_PATTERN.search(text or "")
+    if not match:
+        return ""
+    token = match.group(0).strip()
+    if not token:
+        return ""
+    if token[0] in {"r", "R"}:
+        return f"R{token[1:]}"
+    if token[0] in {"v", "V"}:
+        return f"v{token[1:]}"
+    return token
+
+
+def _infer_deployment_step(text: str) -> str:
+    lowered = str(text or "").lower()
+    if re.search(r"\bqa\b", lowered):
+        return "QA"
+    if re.search(r"\bstage(?:d|s|ing)?\b|\bstg\b", lowered):
+        return "STAGE"
+    if re.search(r"\bprod(?:uction)?\b", lowered):
+        return "PROD"
+    if re.search(r"\bdev(?:elopment)?\b", lowered):
+        return "DEV"
+    return ""
+
+
+def _environment_for_step(step: str, fallback_text: str) -> str:
+    if step == "QA":
+        return "development"
+    if step == "STAGE":
+        return "staging"
+    if step == "PROD":
+        return "production"
+    if step == "DEV":
+        return "development"
+    return _infer_release_environment(fallback_text)
+
+
+def _infer_release_status(text: str) -> str:
+    lowered = str(text or "").lower()
+    if re.search(r"\b(fail(?:ed|ure)?|rollback|rolled back|aborted|error)\b", lowered):
+        return "failed"
+    if re.search(r"\b(scheduled|queued|pending|awaiting approval)\b", lowered):
+        return "scheduled"
+    if re.search(r"\b(in[ -]?progress|deploying|starting|rollout|rolling out|promoting)\b", lowered):
+        return "in-progress"
+    if re.search(r"\b(has deployed|deployed|deploy complete|deployment complete|is live|succeeded|success)\b", lowered):
+        return "deployed"
+    return "deployed"
+
+
 def _infer_release_environment(deployment_path: str) -> str:
     lowered = deployment_path.lower()
     if "stage" in lowered:
@@ -772,13 +848,39 @@ def _sync_release_tracker_win32(
     folder_path = str(config.get("outlook_folder_path") or "Inbox").strip() or "Inbox"
 
     last_processed_at = _parse_checked_at(str(config.get("last_processed_at") or ""))
-    existing_source_uids = {str(item.get("source_uid") or "").strip() for item in existing_events if item.get("source_uid")}
+    events_working = [deepcopy(item) for item in existing_events]
+    existing_source_uids: set[str] = set()
+    index_by_release_key: dict[str, int] = {}
+    index_by_thread_id: dict[str, int] = {}
+    index_by_version: dict[str, int] = {}
+
+    for index, event in enumerate(events_working):
+        for uid in event.get("source_uids") or []:
+            uid_text = str(uid).strip()
+            if uid_text:
+                existing_source_uids.add(uid_text)
+        source_uid_value = str(event.get("source_uid") or "").strip()
+        if source_uid_value:
+            existing_source_uids.add(source_uid_value)
+
+        release_key_value = _canonical_release_key(str(event.get("release_key") or ""))
+        if release_key_value and release_key_value not in index_by_release_key:
+            index_by_release_key[release_key_value] = index
+
+        thread_id_value = str(event.get("source_thread_id") or "").strip()
+        if thread_id_value and thread_id_value not in index_by_thread_id:
+            index_by_thread_id[thread_id_value] = index
+
+        version_value = str(event.get("version") or "").strip().lower()
+        if version_value and version_value != "n/a" and version_value not in index_by_version:
+            index_by_version[version_value] = index
 
     imported_count = 0
+    updated_count = 0
     processed_count = 0
-    new_events: list[dict[str, Any]] = []
     parse_errors: list[str] = []
     latest_processed_at = last_processed_at
+    events_changed = False
 
     pythoncom.CoInitialize()
     try:
@@ -824,29 +926,100 @@ def _sync_release_tracker_win32(
 
             deployed_by = sender_name or sender_email or "Email Ingest"
             deployed_at_label = received_at.strftime("%Y-%m-%d %H:%M")
-            version_match = re.search(r"v\d+\.\d+\.\d+(?:[-+._A-Za-z0-9]*)?", subject, flags=re.IGNORECASE)
-            version = version_match.group(0) if version_match else "n/a"
-            event = {
-                "id": uuid4().hex,
-                "version": version,
-                "name": subject[:160] or "Imported Deployment",
-                "status": "deployed",
-                "environment": _infer_release_environment(subject),
-                "deployed_by": deployed_by[:80],
-                "deployed_at": deployed_at_label,
-                "services": 0,
-                "commits": 0,
-                "deployment_file_path": "",
-                "source_uid": source_uid,
-                "source_subject": subject,
-                "source_doc_ref": "",
-                "imported_at": datetime.now(timezone.utc).isoformat(),
-            }
-            normalized_event = _normalize_release_tracker_event(event)
-            if normalized_event is not None:
-                new_events.append(normalized_event)
-                existing_source_uids.add(source_uid)
-                imported_count += 1
+            body_text = str(getattr(item, "Body", "") or "")
+            message_text = f"{subject}\n{body_text}"
+            release_ref = _extract_release_reference(message_text)
+            if not release_ref:
+                release_ref = _extract_release_reference(subject)
+            release_key = _canonical_release_key(release_ref)
+            conversation_id = str(getattr(item, "ConversationID", "") or "").strip()
+            deployment_step = _infer_deployment_step(message_text)
+            inferred_status = _infer_release_status(message_text)
+            inferred_environment = _environment_for_step(deployment_step, message_text)
+
+            existing_index: int | None = None
+            if release_key:
+                existing_index = index_by_release_key.get(release_key)
+            if existing_index is None and conversation_id:
+                existing_index = index_by_thread_id.get(conversation_id)
+            if existing_index is None and release_ref:
+                existing_index = index_by_version.get(release_ref.lower())
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            if existing_index is not None:
+                current = dict(events_working[existing_index])
+                merged_uids = [str(uid).strip() for uid in (current.get("source_uids") or []) if str(uid).strip()]
+                if source_uid not in merged_uids:
+                    merged_uids.append(source_uid)
+                merged_uids = merged_uids[-50:]
+
+                if release_ref and (str(current.get("version") or "").lower() in {"", "n/a"}):
+                    current["version"] = release_ref
+                if release_ref:
+                    current["release_key"] = release_ref
+                current["status"] = inferred_status
+                current["environment"] = inferred_environment
+                if deployment_step:
+                    current["deployment_step"] = deployment_step
+                current["name"] = subject[:160] or str(current.get("name") or "Imported Deployment")
+                current["deployed_by"] = deployed_by[:80]
+                current["deployed_at"] = deployed_at_label
+                current["source_uid"] = source_uid
+                current["source_uids"] = merged_uids
+                if conversation_id:
+                    current["source_thread_id"] = conversation_id
+                current["source_subject"] = subject
+                current["imported_at"] = now_iso
+
+                normalized_current = _normalize_release_tracker_event(current)
+                if normalized_current is not None:
+                    events_working[existing_index] = normalized_current
+                    if release_key:
+                        index_by_release_key[release_key] = existing_index
+                    thread_value = str(normalized_current.get("source_thread_id") or "").strip()
+                    if thread_value:
+                        index_by_thread_id[thread_value] = existing_index
+                    version_value = str(normalized_current.get("version") or "").strip().lower()
+                    if version_value and version_value != "n/a":
+                        index_by_version[version_value] = existing_index
+                    existing_source_uids.add(source_uid)
+                    updated_count += 1
+                    events_changed = True
+            else:
+                event = {
+                    "id": uuid4().hex,
+                    "version": release_ref or "n/a",
+                    "release_key": release_ref,
+                    "name": subject[:160] or "Imported Deployment",
+                    "status": inferred_status,
+                    "environment": inferred_environment,
+                    "deployment_step": deployment_step,
+                    "deployed_by": deployed_by[:80],
+                    "deployed_at": deployed_at_label,
+                    "services": 0,
+                    "commits": 0,
+                    "deployment_file_path": "",
+                    "source_uid": source_uid,
+                    "source_uids": [source_uid],
+                    "source_thread_id": conversation_id,
+                    "source_subject": subject,
+                    "source_doc_ref": "",
+                    "imported_at": now_iso,
+                }
+                normalized_event = _normalize_release_tracker_event(event)
+                if normalized_event is not None:
+                    events_working.append(normalized_event)
+                    new_index = len(events_working) - 1
+                    if release_key:
+                        index_by_release_key[release_key] = new_index
+                    if conversation_id:
+                        index_by_thread_id[conversation_id] = new_index
+                    version_value = str(normalized_event.get("version") or "").strip().lower()
+                    if version_value and version_value != "n/a":
+                        index_by_version[version_value] = new_index
+                    existing_source_uids.add(source_uid)
+                    imported_count += 1
+                    events_changed = True
 
             if mark_seen:
                 try:
@@ -865,16 +1038,22 @@ def _sync_release_tracker_win32(
         )
         release_tracker_config["last_run_at"] = datetime.now(timezone.utc).isoformat()
         release_tracker_config["last_error"] = "; ".join(parse_errors[-4:]) if parse_errors else ""
-        if new_events:
-            release_tracker_events.extend(new_events)
+        if events_changed:
+            release_tracker_events[:] = events_working
             release_tracker_events.sort(key=_release_sort_key, reverse=True)
             del release_tracker_events[200:]
 
     _save_release_tracker_config()
-    if new_events:
+    if events_changed:
         _save_release_tracker_events()
 
-    return {"ok": True, "imported": imported_count, "processed": processed_count, "message": "Sync complete"}
+    return {
+        "ok": True,
+        "imported": imported_count,
+        "updated": updated_count,
+        "processed": processed_count,
+        "message": "Sync complete",
+    }
 
 
 def _sync_release_tracker_once(*, force: bool = False) -> dict[str, Any]:
@@ -1769,10 +1948,14 @@ def releases() -> str:
 
     notice_code = request.args.get("notice")
     imported_count = _coerce_int(request.args.get("imported"), 0, 0, 1_000_000)
+    updated_count = _coerce_int(request.args.get("updated"), 0, 0, 1_000_000)
     processed_count = _coerce_int(request.args.get("processed"), 0, 0, 1_000_000)
     release_notice = ""
     if notice_code == "release-synced":
-        release_notice = f"Release email sync complete. Processed {processed_count} email(s), imported {imported_count} release item(s)."
+        release_notice = (
+            f"Release email sync complete. Processed {processed_count} email(s), "
+            f"imported {imported_count} new release item(s), updated {updated_count} existing release item(s)."
+        )
     elif notice_code == "release-sync-error":
         release_notice = "Release email sync failed. Check tracker error details below."
     elif notice_code == "release-config-saved":
@@ -1838,6 +2021,7 @@ def sync_releases_now() -> Any:
                 "releases",
                 notice="release-synced",
                 imported=_coerce_int(result.get("imported"), 0, 0, 1_000_000),
+                updated=_coerce_int(result.get("updated"), 0, 0, 1_000_000),
                 processed=_coerce_int(result.get("processed"), 0, 0, 1_000_000),
             )
         )
