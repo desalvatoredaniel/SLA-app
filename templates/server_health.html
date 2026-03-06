@@ -95,7 +95,7 @@
         style="left: {{ region.left }}px; top: {{ region.top }}px; width: {{ region.width }}px; height: {{ region.height }}px"
       >
         <div class="network-group-lane-header">
-          <span class="mono">{{ region.group }}</span>
+          <span class="network-group-name mono">{{ region.group }}</span>
           <span class="network-group-count mono">{{ region.count }} servers</span>
         </div>
       </article>
@@ -173,10 +173,17 @@
 <section class="panel">
   <h2 class="section-title">Server Details</h2>
   {% if grouped_servers %}
+    <div class="group-collapsible-stack">
     {% for group_block in grouped_servers %}
-    <section class="group-block">
-      <h3 class="group-title mono">{{ group_block.group }}</h3>
-      <div class="list-stack">
+    <details class="group-block group-collapsible" open>
+      <summary class="group-summary">
+        <div class="group-summary-left">
+          <h3 class="group-title mono">{{ group_block.group }}</h3>
+          <span class="group-summary-count mono">{{ group_block.servers|length }} servers</span>
+        </div>
+        <span class="group-summary-toggle mono">collapse</span>
+      </summary>
+      <div class="list-stack group-list">
         {% for server in group_block.servers %}
         <article class="list-row" data-server-row data-server-id="{{ server.id }}">
           <div class="row-name">
@@ -194,8 +201,9 @@
         </article>
         {% endfor %}
       </div>
-    </section>
+    </details>
     {% endfor %}
+    </div>
   {% else %}
     <p class="subtle">No servers configured. Go to Config and add your server URL checks.</p>
   {% endif %}
