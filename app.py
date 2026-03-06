@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import html
 import json
 import math
 import os
@@ -381,7 +382,7 @@ def _smtp_is_configured() -> bool:
     return bool(SMTP_HOST and SMTP_FROM)
 
 
-def _send_alert_email(subject: str, body: str, recipients: list[str]) -> tuple[bool, str]:
+def _send_alert_email(subject: str, body: str, recipients: list[str], *, html_body: str | None = None) -> tuple[bool, str]:
     if not recipients:
         return False, "No recipients configured"
     if not _smtp_is_configured():
@@ -392,6 +393,8 @@ def _send_alert_email(subject: str, body: str, recipients: list[str]) -> tuple[b
     message["From"] = SMTP_FROM
     message["To"] = ", ".join(recipients)
     message.set_content(body)
+    if html_body:
+        message.add_alternative(html_body, subtype="html")
 
     try:
         if SMTP_USE_SSL:
@@ -688,7 +691,6 @@ def _build_topology_layout(group_sizes: list[tuple[str, int]]) -> tuple[dict[str
         rows = max(1, int(math.ceil(count / columns)))
         gap_x = 136.0
         gap_y = 156.0
-        #test4
 
         grid_width = (columns - 1) * gap_x
         grid_height = (rows - 1) * gap_y
@@ -744,8 +746,9 @@ def _build_topology_layout(group_sizes: list[tuple[str, int]]) -> tuple[dict[str
         else:
             angle = -(math.pi / 2) + (2 * math.pi * group_index) / group_count
 
+        bottom_push = max(0.0, math.sin(angle)) * (110.0 + max_local_radius * 0.12)
         center_x = mainframe_x0 + orbit_x * math.cos(angle)
-        center_y = mainframe_y0 + orbit_y * math.sin(angle)
+        center_y = mainframe_y0 + orbit_y * math.sin(angle) + bottom_push
         points = [(center_x + dx, center_y + dy) for dx, dy in layout["local_points"]]
         group_slots_pre[layout["group"]] = points
 
@@ -1027,16 +1030,28 @@ def _evaluate_and_send_alert(
 
     check_name = str(check.get("name") or "Unnamed Check")
     check_url = str(check.get("url") or "")
+    check_group = str(check.get("server_group") or SERVER_GROUP_DEFAULT)
     http_status = current_result.get("http_status")
     response_ms = current_result.get("response_ms")
     checked_at = current_result.get("checked_at")
     error_message = current_result.get("error") or ""
+    observed_status = str(http_status) if http_status is not None else "N/A"
+    expected_status = str(current_result.get("expected_status"))
+    safe_name = html.escape(check_name)
+    safe_group = html.escape(check_group)
+    safe_url = html.escape(check_url)
+    safe_checked_at = html.escape(str(checked_at))
+    safe_response_ms = html.escape(str(response_ms))
+    safe_observed = html.escape(observed_status)
+    safe_expected = html.escape(expected_status)
+    safe_error = html.escape(str(error_message))
 
     if alert_kind == "down":
         subject = f"{EMAIL_SUBJECT_PREFIX} DOWN - {check_name}"
         body = (
             f"Server health check is DOWN.\n\n"
             f"Check: {check_name}\n"
+            f"Group: {check_group}\n"
             f"URL: {check_url}\n"
             f"Expected status: {current_result.get('expected_status')}\n"
             f"Observed status: {http_status if http_status is not None else 'N/A'}\n"
@@ -1045,18 +1060,48 @@ def _evaluate_and_send_alert(
         )
         if error_message:
             body += f"Error: {error_message}\n"
+
+        html_body = (
+            "<html><body style=\"font-family:Segoe UI,Arial,sans-serif;color:#0f172a;\">"
+            "<h2 style=\"margin:0 0 12px;color:#b91c1c;\">Server Health Alert: DOWN</h2>"
+            "<table style=\"border-collapse:collapse;font-size:14px;\">"
+            f"<tr><td style=\"padding:4px 10px 4px 0;\"><b>Check</b></td><td>{safe_name}</td></tr>"
+            f"<tr><td style=\"padding:4px 10px 4px 0;\"><b>Group</b></td><td>{safe_group}</td></tr>"
+            f"<tr><td style=\"padding:4px 10px 4px 0;\"><b>URL</b></td><td><a href=\"{safe_url}\">{safe_url}</a></td></tr>"
+            f"<tr><td style=\"padding:4px 10px 4px 0;\"><b>Expected</b></td><td>HTTP {safe_expected}</td></tr>"
+            f"<tr><td style=\"padding:4px 10px 4px 0;\"><b>Observed</b></td><td>HTTP {safe_observed}</td></tr>"
+            f"<tr><td style=\"padding:4px 10px 4px 0;\"><b>Response</b></td><td>{safe_response_ms} ms</td></tr>"
+            f"<tr><td style=\"padding:4px 10px 4px 0;\"><b>Checked (UTC)</b></td><td>{safe_checked_at}</td></tr>"
+            "</table>"
+            + (f"<p style=\"margin-top:12px;\"><b>Error:</b> {safe_error}</p>" if error_message else "")
+            + "</body></html>"
+        )
     else:
         subject = f"{EMAIL_SUBJECT_PREFIX} RECOVERED - {check_name}"
         body = (
             f"Server health check has recovered.\n\n"
             f"Check: {check_name}\n"
+            f"Group: {check_group}\n"
             f"URL: {check_url}\n"
             f"Observed status: {http_status if http_status is not None else 'N/A'}\n"
             f"Response time: {response_ms} ms\n"
             f"Checked at (UTC): {checked_at}\n"
         )
+        html_body = (
+            "<html><body style=\"font-family:Segoe UI,Arial,sans-serif;color:#0f172a;\">"
+            "<h2 style=\"margin:0 0 12px;color:#15803d;\">Server Health Alert: RECOVERED</h2>"
+            "<table style=\"border-collapse:collapse;font-size:14px;\">"
+            f"<tr><td style=\"padding:4px 10px 4px 0;\"><b>Check</b></td><td>{safe_name}</td></tr>"
+            f"<tr><td style=\"padding:4px 10px 4px 0;\"><b>Group</b></td><td>{safe_group}</td></tr>"
+            f"<tr><td style=\"padding:4px 10px 4px 0;\"><b>URL</b></td><td><a href=\"{safe_url}\">{safe_url}</a></td></tr>"
+            f"<tr><td style=\"padding:4px 10px 4px 0;\"><b>Observed</b></td><td>HTTP {safe_observed}</td></tr>"
+            f"<tr><td style=\"padding:4px 10px 4px 0;\"><b>Response</b></td><td>{safe_response_ms} ms</td></tr>"
+            f"<tr><td style=\"padding:4px 10px 4px 0;\"><b>Checked (UTC)</b></td><td>{safe_checked_at}</td></tr>"
+            "</table>"
+            "</body></html>"
+        )
 
-    sent, send_error = _send_alert_email(subject, body, recipients)
+    sent, send_error = _send_alert_email(subject, body, recipients, html_body=html_body)
     return {
         "status": alert_kind,
         "sent_at": now_utc.isoformat(),
