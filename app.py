@@ -666,37 +666,45 @@ def _build_topology_layout(group_sizes: list[tuple[str, int]]) -> tuple[dict[str
         return empty_topology, {}
 
     group_layouts: list[dict[str, Any]] = []
-    max_local_radius = 160.0
+    max_local_radius = 180.0
     for group_name, count in group_sizes:
         local_points: list[tuple[float, float]] = []
+        if count <= 4:
+            columns = 2
+        elif count <= 9:
+            columns = 3
+        elif count <= 16:
+            columns = 4
+        else:
+            columns = 5
+        rows = max(1, int(math.ceil(count / columns)))
+        gap_x = 132.0
+        gap_y = 116.0
+
+        grid_width = (columns - 1) * gap_x
+        grid_height = (rows - 1) * gap_y
+        start_x = -(grid_width / 2)
+        start_y = -(grid_height / 2)
+
         for index in range(count):
-            if index == 0:
-                local_points.append((0.0, 0.0))
-                continue
-
-            remainder = index - 1
-            ring = 1
-            while True:
-                slots = ring * 6
-                if remainder < slots:
-                    break
-                remainder -= slots
-                ring += 1
-
-            angle = -(math.pi / 2) + (2 * math.pi * remainder) / max(slots, 1)
-            radius = ring * 78.0
-            local_points.append((radius * math.cos(angle), radius * math.sin(angle)))
+            row = index // columns
+            col = index % columns
+            row_items = columns if row < rows - 1 else count - (rows - 1) * columns
+            row_shift = ((columns - row_items) * gap_x) / 2 if row_items < columns else 0.0
+            x = start_x + row_shift + col * gap_x
+            y = start_y + row * gap_y
+            local_points.append((x, y))
 
         point_x = [x for x, _ in local_points] or [0.0]
         point_y = [y for _, y in local_points] or [0.0]
-        pad_x = 74.0
-        pad_top = 56.0
-        pad_bottom = 70.0
+        pad_x = 86.0
+        pad_top = 72.0
+        pad_bottom = 76.0
 
         local_left = min(point_x) - pad_x
         local_top = min(point_y) - pad_top
-        local_width = max(250.0, (max(point_x) - min(point_x)) + (pad_x * 2))
-        local_height = max(224.0, (max(point_y) - min(point_y)) + pad_top + pad_bottom)
+        local_width = max(280.0, (max(point_x) - min(point_x)) + (pad_x * 2))
+        local_height = max(240.0, (max(point_y) - min(point_y)) + pad_top + pad_bottom)
         local_radius = max(local_width, local_height) / 2
         max_local_radius = max(max_local_radius, local_radius)
 
