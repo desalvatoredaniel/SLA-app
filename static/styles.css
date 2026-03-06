@@ -247,6 +247,8 @@ body {
   border: 1px solid rgba(34, 211, 238, 0.24);
   background: rgba(2, 6, 23, 0.66);
   cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
 
 .network-viewport.dragging {
@@ -303,6 +305,7 @@ body {
   width: 1400px;
   height: 900px;
   will-change: transform;
+  transform-origin: 0 0;
 }
 
 .grid-overlay {

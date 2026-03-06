@@ -17,6 +17,8 @@
     let offsetX = Number(board.dataset.offsetX || 0);
     let offsetY = Number(board.dataset.offsetY || 0);
     let scale = Number(board.dataset.scale || 1);
+    const resetOffsetX = Number(board.dataset.offsetX || 0);
+    const resetOffsetY = Number(board.dataset.offsetY || 0);
     const minScale = 0.55;
     const maxScale = 1.9;
     let dragging = false;
@@ -31,6 +33,26 @@
     const signalLines = new Map();
     const lastCheckedByNode = new Map();
     const statusClasses = ['healthy', 'warning', 'critical'];
+    board.style.transformOrigin = '0 0';
+
+    function isInteractiveTarget(target) {
+      if (!(target instanceof Element)) {
+        return false;
+      }
+      return Boolean(
+        target.closest(
+          'button, a, input, select, textarea, summary, details, [data-zoom-controls], [data-server-row]',
+        ),
+      );
+    }
+
+    function stopDragging(pointerId) {
+      dragging = false;
+      viewport.classList.remove('dragging');
+      if (pointerId !== undefined && viewport.hasPointerCapture(pointerId)) {
+        viewport.releasePointerCapture(pointerId);
+      }
+    }
 
     function clampOffsets() {
       const viewportWidth = viewport.clientWidth || 0;
@@ -255,21 +277,35 @@
     paintBoard();
 
     viewport.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || isInteractiveTarget(event.target)) {
+        return;
+      }
       dragging = true;
       pointerStartX = event.clientX;
       pointerStartY = event.clientY;
       viewport.classList.add('dragging');
       viewport.setPointerCapture(event.pointerId);
+      event.preventDefault();
     });
 
     viewport.addEventListener('pointerup', (event) => {
-      dragging = false;
-      viewport.classList.remove('dragging');
-      viewport.releasePointerCapture(event.pointerId);
+      stopDragging(event.pointerId);
+    });
+
+    viewport.addEventListener('pointercancel', (event) => {
+      stopDragging(event.pointerId);
+    });
+
+    viewport.addEventListener('lostpointercapture', () => {
+      stopDragging();
     });
 
     viewport.addEventListener('pointermove', (event) => {
       if (!dragging) {
+        return;
+      }
+      if ((event.buttons & 1) === 0) {
+        stopDragging(event.pointerId);
         return;
       }
       const deltaX = event.clientX - pointerStartX;
@@ -301,8 +337,8 @@
     if (zoomResetButton) {
       zoomResetButton.addEventListener('click', () => {
         scale = 1;
-        offsetX = Number(board.dataset.offsetX || 0);
-        offsetY = Number(board.dataset.offsetY || 0);
+        offsetX = resetOffsetX;
+        offsetY = resetOffsetY;
         paintBoard();
       });
     }
