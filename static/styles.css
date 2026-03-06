@@ -253,6 +253,51 @@ body {
   cursor: grabbing;
 }
 
+.network-zoom-controls {
+  position: absolute;
+  top: 0.8rem;
+  right: 0.8rem;
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.42rem;
+  border: 1px solid rgba(34, 211, 238, 0.35);
+  border-radius: 0.6rem;
+  background: rgba(2, 6, 23, 0.86);
+  backdrop-filter: blur(6px);
+}
+
+.zoom-btn {
+  min-width: 30px;
+  height: 30px;
+  border: 1px solid rgba(125, 211, 252, 0.35);
+  border-radius: 0.45rem;
+  background: rgba(15, 23, 42, 0.9);
+  color: #bae6fd;
+  font-weight: 700;
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.zoom-btn:hover {
+  border-color: rgba(34, 211, 238, 0.6);
+  color: #cffafe;
+}
+
+.zoom-btn.reset {
+  min-width: 58px;
+  font-size: 0.72rem;
+}
+
+.zoom-level {
+  min-width: 50px;
+  text-align: right;
+  color: #67e8f9;
+  font-size: 0.72rem;
+}
+
 .network-board {
   position: absolute;
   width: 1400px;
@@ -1389,5 +1434,11 @@ body {
 
   .network-viewport {
     height: clamp(500px, 70vh, 680px);
+  }
+
+  .network-zoom-controls {
+    top: 0.65rem;
+    right: 0.65rem;
+    padding: 0.3rem 0.35rem;
   }
 }

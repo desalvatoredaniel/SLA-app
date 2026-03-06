@@ -5,6 +5,10 @@
     const viewport = document.getElementById('network-viewport');
     const board = document.getElementById('network-board');
     const signalLayer = document.getElementById('signal-layer');
+    const zoomInButton = viewport ? viewport.querySelector('[data-zoom-in]') : null;
+    const zoomOutButton = viewport ? viewport.querySelector('[data-zoom-out]') : null;
+    const zoomResetButton = viewport ? viewport.querySelector('[data-zoom-reset]') : null;
+    const zoomLabel = viewport ? viewport.querySelector('[data-zoom-label]') : null;
 
     if (!viewport || !board || !signalLayer) {
       return;
@@ -12,6 +16,9 @@
 
     let offsetX = Number(board.dataset.offsetX || 0);
     let offsetY = Number(board.dataset.offsetY || 0);
+    let scale = Number(board.dataset.scale || 1);
+    const minScale = 0.55;
+    const maxScale = 1.9;
     let dragging = false;
     let pointerStartX = 0;
     let pointerStartY = 0;
@@ -30,16 +37,61 @@
       const viewportHeight = viewport.clientHeight || 0;
       const boardWidth = Number(board.dataset.boardWidth || board.offsetWidth || 0);
       const boardHeight = Number(board.dataset.boardHeight || board.offsetHeight || 0);
+      const scaledWidth = boardWidth * scale;
+      const scaledHeight = boardHeight * scale;
 
-      const minX = Math.min(0, viewportWidth - boardWidth);
-      const minY = Math.min(0, viewportHeight - boardHeight);
-      offsetX = Math.max(minX, Math.min(0, offsetX));
-      offsetY = Math.max(minY, Math.min(0, offsetY));
+      if (scaledWidth <= viewportWidth) {
+        offsetX = (viewportWidth - scaledWidth) / 2;
+      } else {
+        const minX = viewportWidth - scaledWidth;
+        offsetX = Math.max(minX, Math.min(0, offsetX));
+      }
+
+      if (scaledHeight <= viewportHeight) {
+        offsetY = (viewportHeight - scaledHeight) / 2;
+      } else {
+        const minY = viewportHeight - scaledHeight;
+        offsetY = Math.max(minY, Math.min(0, offsetY));
+      }
+    }
+
+    function updateZoomLabel() {
+      if (!zoomLabel) {
+        return;
+      }
+      zoomLabel.textContent = `${Math.round(scale * 100)}%`;
     }
 
     function paintBoard() {
       clampOffsets();
-      board.style.transform = `translate(${offsetX}px, ${offsetY}px)`;
+      board.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+      updateZoomLabel();
+    }
+
+    function zoomAt(clientX, clientY, requestedScale) {
+      const rect = viewport.getBoundingClientRect();
+      const targetScale = Math.max(minScale, Math.min(maxScale, requestedScale));
+      if (Math.abs(targetScale - scale) < 0.001) {
+        return;
+      }
+
+      const pointerX = clientX - rect.left;
+      const pointerY = clientY - rect.top;
+      const boardX = (pointerX - offsetX) / scale;
+      const boardY = (pointerY - offsetY) / scale;
+
+      scale = targetScale;
+      offsetX = pointerX - boardX * scale;
+      offsetY = pointerY - boardY * scale;
+      paintBoard();
+    }
+
+    function zoomByStep(direction) {
+      const rect = viewport.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      const step = direction > 0 ? 1.12 : 1 / 1.12;
+      zoomAt(centerX, centerY, scale * step);
     }
 
     function formatLastPing(isoValue) {
@@ -229,6 +281,31 @@
       offsetY += deltaY;
       paintBoard();
     });
+
+    viewport.addEventListener(
+      'wheel',
+      (event) => {
+        event.preventDefault();
+        const factor = event.deltaY < 0 ? 1.08 : 1 / 1.08;
+        zoomAt(event.clientX, event.clientY, scale * factor);
+      },
+      { passive: false },
+    );
+
+    if (zoomInButton) {
+      zoomInButton.addEventListener('click', () => zoomByStep(1));
+    }
+    if (zoomOutButton) {
+      zoomOutButton.addEventListener('click', () => zoomByStep(-1));
+    }
+    if (zoomResetButton) {
+      zoomResetButton.addEventListener('click', () => {
+        scale = 1;
+        offsetX = Number(board.dataset.offsetX || 0);
+        offsetY = Number(board.dataset.offsetY || 0);
+        paintBoard();
+      });
+    }
 
     window.addEventListener('resize', paintBoard);
 

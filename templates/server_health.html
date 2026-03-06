@@ -75,11 +75,18 @@
   </h2>
 
   <div id="network-viewport" class="network-viewport">
+    <div class="network-zoom-controls" data-zoom-controls>
+      <button type="button" class="zoom-btn" data-zoom-out aria-label="Zoom out">-</button>
+      <button type="button" class="zoom-btn" data-zoom-in aria-label="Zoom in">+</button>
+      <button type="button" class="zoom-btn reset" data-zoom-reset aria-label="Reset zoom">100%</button>
+      <span class="zoom-level mono" data-zoom-label>100%</span>
+    </div>
     <div
       id="network-board"
       class="network-board"
       data-offset-x="{{ topology.initial_offset_x }}"
       data-offset-y="{{ topology.initial_offset_y }}"
+      data-scale="1"
       data-board-width="{{ topology.board_width }}"
       data-board-height="{{ topology.board_height }}"
       data-topology-signature="{{ topology.signature }}"
@@ -116,7 +123,6 @@
           <p class="mono subtitle">{{ stats.total }} nodes</p>
           <span class="core-dot"></span>
         </div>
-        <div class="throughput mono"><i data-lucide="zap"></i> {{ topology.throughput }}</div>
       </article>
 
       {% for server in servers %}
