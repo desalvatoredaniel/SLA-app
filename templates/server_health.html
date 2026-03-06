@@ -75,25 +75,24 @@
   </h2>
 
   <div id="network-viewport" class="network-viewport">
-    <div id="network-board" class="network-board" data-offset-x="-200" data-offset-y="-200">
+    <div
+      id="network-board"
+      class="network-board"
+      data-offset-x="{{ topology.initial_offset_x }}"
+      data-offset-y="{{ topology.initial_offset_y }}"
+      data-board-width="{{ topology.board_width }}"
+      data-board-height="{{ topology.board_height }}"
+      style="width: {{ topology.board_width }}px; height: {{ topology.board_height }}px"
+    >
       <div class="grid-overlay"></div>
       <div id="signal-layer" class="signal-layer"></div>
-
-      {% for marker in group_markers %}
-      <div
-        class="network-group-marker mono"
-        style="left: {{ marker.x + 250 }}px; top: {{ marker.y + 250 }}px"
-      >
-        {{ marker.group }} ({{ marker.count }})
-      </div>
-      {% endfor %}
 
       <article
         class="mainframe"
         data-mainframe
-        data-x="{{ mainframe.x + 250 }}"
-        data-y="{{ mainframe.y + 250 }}"
-        style="left: {{ mainframe.x + 250 }}px; top: {{ mainframe.y + 250 }}px"
+        data-x="{{ topology.mainframe_x }}"
+        data-y="{{ topology.mainframe_y }}"
+        style="left: {{ topology.mainframe_x }}px; top: {{ topology.mainframe_y }}px"
       >
         <div class="ring ring-outer"></div>
         <div class="ring ring-inner"></div>
@@ -103,7 +102,7 @@
           <p class="mono subtitle">{{ stats.total }} nodes</p>
           <span class="core-dot"></span>
         </div>
-        <div class="throughput mono"><i data-lucide="zap"></i> {{ mainframe.throughput }}</div>
+        <div class="throughput mono"><i data-lucide="zap"></i> {{ topology.throughput }}</div>
       </article>
 
       {% for server in servers %}
@@ -117,9 +116,9 @@
         data-ping-duration="{{ server.ping_duration_seconds }}"
         data-ping-delay="{{ server.ping_delay_seconds }}"
         data-last-checked-at="{{ server.last_ping_at or '' }}"
-        data-x="{{ server.x + 250 }}"
-        data-y="{{ server.y + 250 }}"
-        style="left: {{ server.x + 250 }}px; top: {{ server.y + 250 }}px"
+        data-x="{{ server.x }}"
+        data-y="{{ server.y }}"
+        style="left: {{ server.x }}px; top: {{ server.y }}px"
       >
         <div class="server-icons">
           <i data-lucide="server"></i>

@@ -10,8 +10,8 @@
       return;
     }
 
-    let offsetX = Number(board.dataset.offsetX || -200);
-    let offsetY = Number(board.dataset.offsetY || -200);
+    let offsetX = Number(board.dataset.offsetX || 0);
+    let offsetY = Number(board.dataset.offsetY || 0);
     let dragging = false;
     let pointerStartX = 0;
     let pointerStartY = 0;
@@ -25,7 +25,20 @@
     const lastCheckedByNode = new Map();
     const statusClasses = ['healthy', 'warning', 'critical'];
 
+    function clampOffsets() {
+      const viewportWidth = viewport.clientWidth || 0;
+      const viewportHeight = viewport.clientHeight || 0;
+      const boardWidth = Number(board.dataset.boardWidth || board.offsetWidth || 0);
+      const boardHeight = Number(board.dataset.boardHeight || board.offsetHeight || 0);
+
+      const minX = Math.min(0, viewportWidth - boardWidth);
+      const minY = Math.min(0, viewportHeight - boardHeight);
+      offsetX = Math.max(minX, Math.min(0, offsetX));
+      offsetY = Math.max(minY, Math.min(0, offsetY));
+    }
+
     function paintBoard() {
+      clampOffsets();
       board.style.transform = `translate(${offsetX}px, ${offsetY}px)`;
     }
 
@@ -212,10 +225,12 @@
       pointerStartX = event.clientX;
       pointerStartY = event.clientY;
 
-      offsetX = Math.max(-400, Math.min(400, offsetX + deltaX));
-      offsetY = Math.max(-300, Math.min(300, offsetY + deltaY));
+      offsetX += deltaX;
+      offsetY += deltaY;
       paintBoard();
     });
+
+    window.addEventListener('resize', paintBoard);
 
     const mainframe = board.querySelector('[data-mainframe]');
     if (mainframe) {
@@ -278,31 +293,26 @@
 
         const payload = await response.json();
         const servers = Array.isArray(payload.servers) ? payload.servers : [];
-        const markers = Array.isArray(payload.group_markers) ? payload.group_markers : [];
+        const topology = payload.topology && typeof payload.topology === 'object' ? payload.topology : null;
         const incomingIds = new Set(servers.map((server) => String(server.id)));
         const currentIds = Array.from(serverNodes.keys());
-        const markerElements = Array.from(document.querySelectorAll('.network-group-marker'));
 
         const hasTopologyChange =
           incomingIds.size !== currentIds.length ||
           currentIds.some((id) => !incomingIds.has(id)) ||
+          (topology &&
+            (Number(board.dataset.boardWidth || 0) !== Number(topology.board_width || 0) ||
+              Number(board.dataset.boardHeight || 0) !== Number(topology.board_height || 0) ||
+              Number(mainframe?.dataset.x || 0) !== Number(topology.mainframe_x || 0) ||
+              Number(mainframe?.dataset.y || 0) !== Number(topology.mainframe_y || 0))) ||
           servers.some((server) => {
             const node = serverNodes.get(String(server.id));
             if (!node) {
               return true;
             }
-            const expectedX = String(Number(server.x) + 250);
-            const expectedY = String(Number(server.y) + 250);
+            const expectedX = String(Number(server.x));
+            const expectedY = String(Number(server.y));
             return node.dataset.x !== expectedX || node.dataset.y !== expectedY;
-          }) ||
-          markers.length !== markerElements.length ||
-          markers.some((marker, idx) => {
-            const el = markerElements[idx];
-            if (!el) {
-              return true;
-            }
-            const expectedText = `${marker.group} (${marker.count})`;
-            return el.textContent.trim() !== expectedText;
           });
 
         if (hasTopologyChange) {

@@ -16,6 +16,7 @@ from pathlib import Path
 from time import perf_counter, sleep
 from typing import Any
 from urllib import error as urllib_error
+from urllib.parse import urlparse
 from urllib import request as urllib_request
 from uuid import uuid4
 
@@ -323,6 +324,51 @@ def _normalize_server_group(raw: str | None) -> str:
     return SERVER_GROUP_DEFAULT
 
 
+def _is_valid_http_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _derive_name_from_url(value: str, *, fallback_index: int) -> str:
+    parsed = urlparse(value)
+    host = parsed.netloc or f"Server {fallback_index}"
+    path = parsed.path.strip("/")
+    if path:
+        first_segment = path.split("/")[0]
+        return f"{host}/{first_segment}"[:80]
+    return host[:80]
+
+
+def _parse_bulk_line(line: str, *, fallback_group: str, fallback_index: int) -> tuple[str, str, str] | None:
+    raw = line.strip()
+    if not raw or raw.startswith("#"):
+        return None
+
+    parts = [part.strip() for part in raw.split(",")]
+
+    if len(parts) >= 2:
+        left, right = parts[0], parts[1]
+        if _is_valid_http_url(left) and not _is_valid_http_url(right):
+            url = left
+            name = right or _derive_name_from_url(url, fallback_index=fallback_index)
+        else:
+            name = left
+            url = right
+        group = _normalize_server_group(parts[2] if len(parts) >= 3 else fallback_group)
+    else:
+        url = raw
+        name = _derive_name_from_url(url, fallback_index=fallback_index)
+        group = fallback_group
+
+    if not _is_valid_http_url(url):
+        return None
+
+    if not name:
+        name = _derive_name_from_url(url, fallback_index=fallback_index)
+
+    return name[:80], url, group
+
+
 def _parse_recipients(raw: str) -> list[str]:
     if not raw:
         return []
@@ -468,20 +514,34 @@ def _find_server_health_check(check_id: str) -> tuple[int, dict[str, Any] | None
     return -1, None
 
 
-def _notice_text(notice_code: str | None) -> str:
+def _notice_text(notice_code: str | None, *, added: str | None = None, skipped: str | None = None) -> str:
     if not notice_code:
         return ""
+
+    try:
+        added_count = int(added) if added is not None else 0
+    except ValueError:
+        added_count = 0
+    try:
+        skipped_count = int(skipped) if skipped is not None else 0
+    except ValueError:
+        skipped_count = 0
 
     notices = {
         "added": "Health check target added.",
         "updated": "Health check target updated.",
         "deleted": "Health check target removed.",
+        "bulk-empty": "Bulk upload is empty.",
+        "bulk-invalid-alerts": "Bulk upload requires alert recipients when email alerts are enabled.",
         "tested-up": "Health check passed.",
         "tested-down": "Health check failed.",
         "tested-all": "All enabled checks were tested.",
         "missing-required": "Required fields are missing (including credentials for the selected auth type).",
         "missing-target": "Health check target was not found.",
     }
+    if notice_code == "bulk-added":
+        return f"Bulk upload complete. Added {added_count} check(s), skipped {skipped_count}."
+
     return notices.get(notice_code, "")
 
 
@@ -589,106 +649,113 @@ def _refresh_enabled_server_health_checks(*, force: bool = False, max_age_second
         _save_server_health_checks()
 
 
-def _build_live_servers_from_checks() -> list[dict[str, Any]]:
+def _build_topology_layout(server_count: int) -> dict[str, Any]:
+    columns = min(8, max(4, int(math.ceil(math.sqrt(max(server_count, 1))))))
+    rows = max(1, int(math.ceil(server_count / columns))) if server_count else 1
+
+    cell_x = 152
+    cell_y = 116
+    node_origin_x = 360
+    node_origin_y = 120
+    grid_height = max(0, (rows - 1) * cell_y)
+
+    board_width = max(1400, node_origin_x + max(0, columns - 1) * cell_x + 280)
+    board_height = max(900, node_origin_y + grid_height + 260)
+
+    mainframe_x = 170
+    mainframe_y = int(max(300, node_origin_y + (grid_height / 2))) if server_count else board_height // 2
+    mainframe_y = max(180, min(board_height - 180, mainframe_y))
+
+    return {
+        "board_width": board_width,
+        "board_height": board_height,
+        "mainframe_x": mainframe_x,
+        "mainframe_y": mainframe_y,
+        "throughput": f"{max(0.8, server_count * 0.12):.1f} GB/s",
+        "columns": columns,
+        "cell_x": cell_x,
+        "cell_y": cell_y,
+        "node_origin_x": node_origin_x,
+        "node_origin_y": node_origin_y,
+        "initial_offset_x": 0,
+        "initial_offset_y": -max(0, mainframe_y - 250),
+    }
+
+
+def _build_live_servers_from_checks() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     with SERVER_HEALTH_LOCK:
         checks = [deepcopy(check) for check in server_health_checks]
     if not checks:
-        return []
+        return [], _build_topology_layout(0)
 
     group_rank = {group: index for index, group in enumerate(SERVER_GROUP_OPTIONS)}
     checks.sort(key=lambda check: (group_rank.get(check.get("server_group", ""), 999), str(check.get("name", "")).lower()))
 
     now = datetime.now(timezone.utc)
-    center_x = 500
-    center_y = 300
-    group_checks: dict[str, list[dict[str, Any]]] = {group: [] for group in SERVER_GROUP_OPTIONS}
-    for check in checks:
-        group_checks[_normalize_server_group(check.get("server_group"))].append(check)
-
-    active_groups = [group for group in SERVER_GROUP_OPTIONS if group_checks[group]]
-    group_count = len(active_groups)
-    cluster_ring_x = 320
-    cluster_ring_y = 205
+    topology = _build_topology_layout(len(checks))
 
     nodes: list[dict[str, Any]] = []
-    for group_index, group_name in enumerate(active_groups):
-        group_members = group_checks[group_name]
-        group_size = len(group_members)
+    for index, check in enumerate(checks):
+        row = index // int(topology["columns"])
+        col = index % int(topology["columns"])
+        stagger_x = 12 if row % 2 else 0
+        x = int(int(topology["node_origin_x"]) + col * int(topology["cell_x"]) + stagger_x)
+        y = int(int(topology["node_origin_y"]) + row * int(topology["cell_y"]))
 
-        group_angle = -(math.pi / 2) + (2 * math.pi * group_index) / max(group_count, 1)
-        group_center_x = center_x + cluster_ring_x * math.cos(group_angle)
-        group_center_y = center_y + cluster_ring_y * math.sin(group_angle)
-        local_radius = 0.0 if group_size <= 1 else min(95.0, 28.0 + 18.0 * math.sqrt(group_size))
+        last_check = check.get("last_check") or {}
+        is_up = bool(last_check.get("is_up"))
+        checked_at = _parse_checked_at(last_check.get("checked_at"))
+        checked_recently = bool(checked_at and (now - checked_at).total_seconds() <= 8)
+        enabled = bool(check.get("is_enabled"))
 
-        for local_index, check in enumerate(group_members):
-            if group_size <= 1:
-                x = int(group_center_x)
-                y = int(group_center_y)
-            elif group_size == 2:
-                local_angle = -math.pi / 2 if local_index == 0 else math.pi / 2
-                x = int(group_center_x + local_radius * math.cos(local_angle))
-                y = int(group_center_y + local_radius * math.sin(local_angle))
-            else:
-                local_angle = -(math.pi / 2) + (2 * math.pi * local_index) / group_size
-                x = int(group_center_x + local_radius * math.cos(local_angle))
-                y = int(group_center_y + local_radius * math.sin(local_angle))
+        if not enabled:
+            status = "warning"
+        elif not last_check:
+            status = "warning"
+        elif is_up:
+            status = "healthy"
+        else:
+            status = "critical"
 
-            last_check = check.get("last_check") or {}
-            is_up = bool(last_check.get("is_up"))
-            checked_at = _parse_checked_at(last_check.get("checked_at"))
-            checked_recently = bool(checked_at and (now - checked_at).total_seconds() <= 8)
-            enabled = bool(check.get("is_enabled"))
+        response_time = last_check.get("response_ms")
+        if response_time is None:
+            response_time = 0
+        try:
+            response_time_value = int(round(float(response_time)))
+        except (TypeError, ValueError):
+            response_time_value = 0
 
-            if not enabled:
-                status = "warning"
-            elif not last_check:
-                status = "warning"
-            elif is_up:
-                status = "healthy"
-            else:
-                status = "critical"
+        total_checks = int(check.get("total_checks") or 0)
+        successful_checks = int(check.get("successful_checks") or 0)
+        uptime = round((successful_checks / total_checks) * 100, 1) if total_checks > 0 else 0.0
+        ping_color = "#22d3ee" if status == "healthy" else "#facc15" if status == "warning" else "#f87171"
+        ping_duration = round(max(0.55, min(2.8, (response_time_value or 500) / 420)), 2)
+        ping_delay = round((index % 7) * 0.09, 2)
 
-            response_time = last_check.get("response_ms")
-            if response_time is None:
-                response_time = 0
-            try:
-                response_time_value = int(round(float(response_time)))
-            except (TypeError, ValueError):
-                response_time_value = 0
+        nodes.append(
+            {
+                "id": check["id"],
+                "name": check["name"],
+                "server_group": _normalize_server_group(check.get("server_group")),
+                "url": check["url"],
+                "is_enabled": enabled,
+                "status": status,
+                "response_time": response_time_value,
+                "uptime": uptime,
+                "x": x,
+                "y": y,
+                "last_check": last_check if last_check else None,
+                "last_ping_at": last_check.get("checked_at"),
+                "last_ping_display": _format_last_ping_display(last_check.get("checked_at")),
+                "http_status": last_check.get("http_status"),
+                "animate_ping": bool(enabled and checked_recently),
+                "ping_color": ping_color,
+                "ping_duration_seconds": ping_duration,
+                "ping_delay_seconds": ping_delay,
+            }
+        )
 
-            total_checks = int(check.get("total_checks") or 0)
-            successful_checks = int(check.get("successful_checks") or 0)
-            uptime = round((successful_checks / total_checks) * 100, 1) if total_checks > 0 else 0.0
-            ping_color = "#22d3ee" if status == "healthy" else "#facc15" if status == "warning" else "#f87171"
-            ping_duration = round(max(0.55, min(2.8, (response_time_value or 500) / 420)), 2)
-            ping_delay = round((local_index % 5) * 0.12 + (group_index % 3) * 0.08, 2)
-
-            nodes.append(
-                {
-                    "id": check["id"],
-                    "name": check["name"],
-                    "server_group": group_name,
-                    "url": check["url"],
-                    "is_enabled": enabled,
-                    "status": status,
-                    "response_time": response_time_value,
-                    "uptime": uptime,
-                    "x": x,
-                    "y": y,
-                    "group_center_x": int(group_center_x),
-                    "group_center_y": int(group_center_y),
-                    "last_check": last_check if last_check else None,
-                    "last_ping_at": last_check.get("checked_at"),
-                    "last_ping_display": _format_last_ping_display(last_check.get("checked_at")),
-                    "http_status": last_check.get("http_status"),
-                    "animate_ping": bool(enabled and checked_recently),
-                    "ping_color": ping_color,
-                    "ping_duration_seconds": ping_duration,
-                    "ping_delay_seconds": ping_delay,
-                }
-            )
-
-    return nodes
+    return nodes, topology
 
 
 def _run_server_health_check(check: dict[str, Any]) -> dict[str, Any]:
@@ -991,18 +1058,7 @@ def server_health() -> str:
     with SERVER_HEALTH_LOCK:
         has_configured_servers = bool(server_health_checks)
 
-    servers = _build_live_servers_from_checks()
-    group_markers = [
-        {
-            "group": group,
-            "x": int(sum(item["group_center_x"] for item in group_items) / len(group_items)),
-            "y": int(sum(item["group_center_y"] for item in group_items) / len(group_items)),
-            "count": len(group_items),
-        }
-        for group in SERVER_GROUP_OPTIONS
-        for group_items in [[server for server in servers if server.get("server_group") == group]]
-        if group_items
-    ]
+    servers, topology = _build_live_servers_from_checks()
     grouped_servers: list[dict[str, Any]] = []
     for group in SERVER_GROUP_OPTIONS:
         group_items = [server for server in servers if server.get("server_group") == group]
@@ -1018,10 +1074,9 @@ def server_health() -> str:
         page_title="Server Health",
         active_page="server-health",
         servers=servers,
-        group_markers=group_markers,
+        topology=topology,
         grouped_servers=grouped_servers,
         has_configured_servers=has_configured_servers,
-        mainframe={"x": 500, "y": 300, "throughput": "2.4 GB/s"},
         stats={
             "total": len(servers),
             "healthy": healthy_count,
@@ -1034,18 +1089,7 @@ def server_health() -> str:
 
 
 def _server_health_live_payload() -> dict[str, Any]:
-    servers = _build_live_servers_from_checks()
-    group_markers = [
-        {
-            "group": group,
-            "x": int(sum(item["group_center_x"] for item in group_items) / len(group_items)),
-            "y": int(sum(item["group_center_y"] for item in group_items) / len(group_items)),
-            "count": len(group_items),
-        }
-        for group in SERVER_GROUP_OPTIONS
-        for group_items in [[server for server in servers if server.get("server_group") == group]]
-        if group_items
-    ]
+    servers, topology = _build_live_servers_from_checks()
     healthy_count = sum(server["status"] == "healthy" for server in servers)
     warning_count = sum(server["status"] == "warning" for server in servers)
     critical_count = sum(server["status"] == "critical" for server in servers)
@@ -1060,7 +1104,7 @@ def _server_health_live_payload() -> dict[str, Any]:
             "critical": critical_count,
         },
         "servers": servers,
-        "group_markers": group_markers,
+        "topology": topology,
     }
 
 
@@ -1133,7 +1177,11 @@ def server_health_config() -> str:
         active_page="config-server-health",
         checks=checks_for_view,
         server_group_options=SERVER_GROUP_OPTIONS,
-        notice_text=_notice_text(request.args.get("notice")),
+        notice_text=_notice_text(
+            request.args.get("notice"),
+            added=request.args.get("added"),
+            skipped=request.args.get("skipped"),
+        ),
         health_config_stats=_server_health_stats(),
         health_check_interval_seconds=HEALTH_CHECK_INTERVAL_SECONDS,
         smtp_configured=_smtp_is_configured(),
@@ -1152,6 +1200,87 @@ def add_server_health_config():
         server_health_checks.append(new_check)
     _save_server_health_checks()
     return redirect(url_for("server_health_config", notice="added"))
+
+
+@app.post("/config/server-health/bulk-add")
+def bulk_add_server_health_config():
+    bulk_urls = str(request.form.get("bulk_urls", "")).strip()
+    if not bulk_urls:
+        return redirect(url_for("server_health_config", notice="bulk-empty"))
+
+    fallback_group = _normalize_server_group(str(request.form.get("bulk_server_group", SERVER_GROUP_DEFAULT)))
+    method = str(request.form.get("bulk_method", "GET")).upper()
+    if method not in ALLOWED_HTTP_METHODS:
+        method = "GET"
+
+    timeout_seconds = _coerce_float(request.form.get("bulk_timeout_seconds"), 5.0, 1.0, 30.0)
+    expected_status = _coerce_int(request.form.get("bulk_expected_status"), 200, 100, 599)
+    verify_tls = request.form.get("bulk_verify_tls") == "on"
+    is_enabled = request.form.get("bulk_is_enabled") == "on"
+    email_alerts_enabled = request.form.get("bulk_email_alerts_enabled") == "on"
+    alert_recipients = str(request.form.get("bulk_alert_recipients", "")).strip()
+    alert_on_recovery = request.form.get("bulk_alert_on_recovery") == "on"
+
+    if email_alerts_enabled and not _parse_recipients(alert_recipients):
+        return redirect(url_for("server_health_config", notice="bulk-invalid-alerts"))
+
+    lines = bulk_urls.splitlines()
+    parsed_rows: list[tuple[str, str, str]] = []
+    skipped_count = 0
+    for index, line in enumerate(lines, start=1):
+        parsed = _parse_bulk_line(line, fallback_group=fallback_group, fallback_index=index)
+        if parsed is None:
+            if line.strip():
+                skipped_count += 1
+            continue
+        parsed_rows.append(parsed)
+
+    if not parsed_rows and skipped_count == 0:
+        return redirect(url_for("server_health_config", notice="bulk-empty"))
+
+    with SERVER_HEALTH_LOCK:
+        existing_keys = {
+            (str(check.get("url", "")).strip().lower(), _normalize_server_group(check.get("server_group")))
+            for check in server_health_checks
+        }
+
+        added_count = 0
+        for name, url, group in parsed_rows:
+            dedupe_key = (url.strip().lower(), group)
+            if dedupe_key in existing_keys:
+                skipped_count += 1
+                continue
+
+            check_id = uuid4().hex
+            server_health_checks.append(
+                {
+                    "id": check_id,
+                    "name": name,
+                    "server_group": group,
+                    "url": url,
+                    "method": method,
+                    "auth_type": "none",
+                    "username": "",
+                    "password_env_key": "",
+                    "bearer_token_env_key": "",
+                    "timeout_seconds": timeout_seconds,
+                    "expected_status": expected_status,
+                    "verify_tls": verify_tls,
+                    "is_enabled": is_enabled,
+                    "email_alerts_enabled": email_alerts_enabled,
+                    "alert_recipients": alert_recipients,
+                    "alert_on_recovery": alert_on_recovery,
+                    "last_alert": None,
+                    "last_check": None,
+                    "total_checks": 0,
+                    "successful_checks": 0,
+                }
+            )
+            existing_keys.add(dedupe_key)
+            added_count += 1
+
+    _save_server_health_checks()
+    return redirect(url_for("server_health_config", notice="bulk-added", added=added_count, skipped=skipped_count))
 
 
 @app.post("/config/server-health/<check_id>/update")
