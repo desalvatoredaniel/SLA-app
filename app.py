@@ -442,7 +442,8 @@ def _normalize_server_health_check(raw: dict[str, Any]) -> dict[str, Any]:
         "expected_status": _coerce_int(raw.get("expected_status"), 200, 100, 599),
         "verify_tls": bool(raw.get("verify_tls", True)),
         "is_enabled": bool(raw.get("is_enabled", True)),
-        "email_alerts_enabled": bool(raw.get("email_alerts_enabled", False)),
+        "email_alerts_enabled": bool(raw.get("email_alerts_enabled", True)),
+        "email_alerts_initialized": bool(raw.get("email_alerts_initialized", False)),
         "alert_recipients": str(raw.get("alert_recipients") or "").strip(),
         "alert_on_recovery": bool(raw.get("alert_on_recovery", True)),
         "last_alert": raw.get("last_alert") if isinstance(raw.get("last_alert"), dict) else None,
@@ -490,6 +491,13 @@ def _load_server_health_checks() -> list[dict[str, Any]]:
                 normalized["bearer_token_env_key"] = _secret_key_for(normalized["id"], "BEARER_TOKEN")
             if not _has_secret(normalized["bearer_token_env_key"]):
                 _upsert_env_value(normalized["bearer_token_env_key"], legacy_bearer)
+            migrated = True
+
+        # One-time default migration: enable email alerts for existing checks,
+        # while allowing manual overrides after initialization.
+        if not normalized.get("email_alerts_initialized"):
+            normalized["email_alerts_enabled"] = True
+            normalized["email_alerts_initialized"] = True
             migrated = True
 
         checks.append(normalized)
@@ -1141,6 +1149,7 @@ def _build_server_health_check_from_form(
         "verify_tls": form_data.get("verify_tls") == "on",
         "is_enabled": form_data.get("is_enabled") == "on",
         "email_alerts_enabled": email_alerts_enabled,
+        "email_alerts_initialized": True,
         "alert_recipients": alert_recipients,
         "alert_on_recovery": alert_on_recovery,
         "last_alert": existing.get("last_alert") if existing else None,
@@ -1411,6 +1420,7 @@ def bulk_add_server_health_config():
                     "verify_tls": verify_tls,
                     "is_enabled": is_enabled,
                     "email_alerts_enabled": email_alerts_enabled,
+                    "email_alerts_initialized": True,
                     "alert_recipients": alert_recipients,
                     "alert_on_recovery": alert_on_recovery,
                     "last_alert": None,
