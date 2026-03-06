@@ -678,8 +678,8 @@ def _build_topology_layout(group_sizes: list[tuple[str, int]]) -> tuple[dict[str
         else:
             columns = 5
         rows = max(1, int(math.ceil(count / columns)))
-        gap_x = 132.0
-        gap_y = 116.0
+        gap_x = 144.0
+        gap_y = 126.0
 
         grid_width = (columns - 1) * gap_x
         grid_height = (rows - 1) * gap_y
@@ -697,14 +697,14 @@ def _build_topology_layout(group_sizes: list[tuple[str, int]]) -> tuple[dict[str
 
         point_x = [x for x, _ in local_points] or [0.0]
         point_y = [y for _, y in local_points] or [0.0]
-        pad_x = 86.0
-        pad_top = 72.0
-        pad_bottom = 76.0
+        pad_x = 96.0
+        pad_top = 96.0
+        pad_bottom = 88.0
 
         local_left = min(point_x) - pad_x
         local_top = min(point_y) - pad_top
-        local_width = max(280.0, (max(point_x) - min(point_x)) + (pad_x * 2))
-        local_height = max(240.0, (max(point_y) - min(point_y)) + pad_top + pad_bottom)
+        local_width = max(300.0, (max(point_x) - min(point_x)) + (pad_x * 2))
+        local_height = max(260.0, (max(point_y) - min(point_y)) + pad_top + pad_bottom)
         local_radius = max(local_width, local_height) / 2
         max_local_radius = max(max_local_radius, local_radius)
 
