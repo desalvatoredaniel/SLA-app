@@ -2,22 +2,20 @@ from __future__ import annotations
 
 import ast
 import html
-import imaplib
 import json
 import math
 import os
 import re
 import smtplib
 import ssl
+import sys
+import tempfile
 import threading
 import zipfile
 from base64 import b64encode
 from copy import deepcopy
 from datetime import date, datetime, timezone
-from email import policy
 from email.message import EmailMessage
-from email.parser import BytesParser
-from email.utils import parseaddr, parsedate_to_datetime
 from io import BytesIO
 from pathlib import Path
 from time import perf_counter, sleep
@@ -60,6 +58,17 @@ def _env_bool(key: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(key: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.getenv(key)
+    if raw is None:
+        return default
+    try:
+        parsed = int(raw.strip())
+    except ValueError:
+        return default
+    return max(minimum, min(maximum, parsed))
+
+
 try:
     ALERT_REMINDER_SECONDS = max(60.0, min(86_400.0, float(os.getenv("SLA_ALERT_REMINDER_SECONDS", "900"))))
 except ValueError:
@@ -79,12 +88,9 @@ EMAIL_SUBJECT_PREFIX = os.getenv("SLA_ALERT_SUBJECT_PREFIX", "[SLA Server Health
 
 RELEASE_TRACKER_DEFAULTS: dict[str, Any] = {
     "is_enabled": False,
-    "imap_host": os.getenv("SLA_RELEASE_IMAP_HOST", "").strip(),
-    "imap_port": 993,
-    "imap_username": os.getenv("SLA_RELEASE_IMAP_USERNAME", "").strip(),
-    "imap_password_env_key": os.getenv("SLA_RELEASE_IMAP_PASSWORD_ENV_KEY", "SLA_RELEASE_IMAP_PASSWORD").strip()
-    or "SLA_RELEASE_IMAP_PASSWORD",
-    "imap_mailbox": os.getenv("SLA_RELEASE_IMAP_MAILBOX", "INBOX").strip() or "INBOX",
+    "provider": "win32",
+    "outlook_mailbox": os.getenv("SLA_RELEASE_OUTLOOK_MAILBOX", "").strip(),
+    "outlook_folder_path": os.getenv("SLA_RELEASE_OUTLOOK_FOLDER_PATH", "Inbox").strip() or "Inbox",
     "subject_filter": os.getenv("SLA_RELEASE_SUBJECT_FILTER", "").strip(),
     "sender_filter": os.getenv("SLA_RELEASE_SENDER_FILTER", "").strip(),
     "doc_link_regex": os.getenv("SLA_RELEASE_DOC_LINK_REGEX", r"https?://[^\s\"'<>]+").strip() or r"https?://[^\s\"'<>]+",
@@ -93,10 +99,11 @@ RELEASE_TRACKER_DEFAULTS: dict[str, Any] = {
         r"(?i)(?:[A-Za-z]:\\[^\s\"'<>\|]+|/[^\s\"'<>]+)\.(?:zip|jar|war|tar|tar\.gz|tgz|yaml|yml|json|xml|txt|sh|ps1)",
     ).strip()
     or r"(?i)(?:[A-Za-z]:\\[^\s\"'<>\|]+|/[^\s\"'<>]+)\.(?:zip|jar|war|tar|tar\.gz|tgz|yaml|yml|json|xml|txt|sh|ps1)",
-    "only_unseen": True,
-    "mark_seen": False,
-    "poll_interval_seconds": 180,
-    "last_uid": 0,
+    "only_unseen": _env_bool("SLA_RELEASE_ONLY_UNSEEN", True),
+    "mark_seen": _env_bool("SLA_RELEASE_MARK_SEEN", False),
+    "poll_interval_seconds": _env_int("SLA_RELEASE_POLL_INTERVAL_SECONDS", 180, 30, 86_400),
+    "only_newer_than_last_run": _env_bool("SLA_RELEASE_ONLY_NEWER_THAN_LAST_RUN", True),
+    "last_processed_at": "",
     "last_run_at": "",
     "last_error": "",
 }
@@ -555,16 +562,15 @@ def _save_server_health_checks() -> None:
 
 
 def _normalize_release_tracker_config(raw: dict[str, Any]) -> dict[str, Any]:
+    provider = str(raw.get("provider") or RELEASE_TRACKER_DEFAULTS["provider"]).strip().lower()
+    if provider != "win32":
+        provider = "win32"
     return {
         "is_enabled": bool(raw.get("is_enabled", RELEASE_TRACKER_DEFAULTS["is_enabled"])),
-        "imap_host": str(raw.get("imap_host") or RELEASE_TRACKER_DEFAULTS["imap_host"]).strip(),
-        "imap_port": _coerce_int(raw.get("imap_port"), int(RELEASE_TRACKER_DEFAULTS["imap_port"]), 1, 65535),
-        "imap_username": str(raw.get("imap_username") or RELEASE_TRACKER_DEFAULTS["imap_username"]).strip(),
-        "imap_password_env_key": str(
-            raw.get("imap_password_env_key") or RELEASE_TRACKER_DEFAULTS["imap_password_env_key"]
-        ).strip()
-        or str(RELEASE_TRACKER_DEFAULTS["imap_password_env_key"]),
-        "imap_mailbox": str(raw.get("imap_mailbox") or RELEASE_TRACKER_DEFAULTS["imap_mailbox"]).strip() or "INBOX",
+        "provider": provider,
+        "outlook_mailbox": str(raw.get("outlook_mailbox") or RELEASE_TRACKER_DEFAULTS["outlook_mailbox"]).strip(),
+        "outlook_folder_path": str(raw.get("outlook_folder_path") or RELEASE_TRACKER_DEFAULTS["outlook_folder_path"]).strip()
+        or "Inbox",
         "subject_filter": str(raw.get("subject_filter") or RELEASE_TRACKER_DEFAULTS["subject_filter"]).strip(),
         "sender_filter": str(raw.get("sender_filter") or RELEASE_TRACKER_DEFAULTS["sender_filter"]).strip(),
         "doc_link_regex": str(raw.get("doc_link_regex") or RELEASE_TRACKER_DEFAULTS["doc_link_regex"]).strip()
@@ -581,7 +587,10 @@ def _normalize_release_tracker_config(raw: dict[str, Any]) -> dict[str, Any]:
             30,
             86_400,
         ),
-        "last_uid": _coerce_int(raw.get("last_uid"), 0, 0, 2_147_483_647),
+        "only_newer_than_last_run": bool(
+            raw.get("only_newer_than_last_run", RELEASE_TRACKER_DEFAULTS["only_newer_than_last_run"])
+        ),
+        "last_processed_at": str(raw.get("last_processed_at") or "").strip(),
         "last_run_at": str(raw.get("last_run_at") or "").strip(),
         "last_error": str(raw.get("last_error") or "").strip(),
     }
@@ -667,56 +676,110 @@ def _extract_links_from_text(text: str) -> list[str]:
     return [match.group(0).strip() for match in re.finditer(r"https?://[^\s\"'<>]+", text)]
 
 
-def _extract_message_text(message: EmailMessage) -> str:
-    segments: list[str] = []
-    preferred = message.get_body(preferencelist=("plain", "html"))
-    if preferred:
+def _is_windows_platform() -> bool:
+    return sys.platform.startswith("win")
+
+
+def _coerce_outlook_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return datetime.fromtimestamp(value.timestamp(), tz=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    if hasattr(value, "timestamp"):
         try:
-            content = preferred.get_content()
+            return datetime.fromtimestamp(float(value.timestamp()), tz=timezone.utc)
         except Exception:  # noqa: BLE001
-            content = ""
-        if isinstance(content, str) and content.strip():
-            segments.append(content)
+            pass
 
-    if not segments:
-        for part in message.walk():
-            if part.get_content_disposition() == "attachment":
-                continue
-            content_type = part.get_content_type()
-            if content_type not in {"text/plain", "text/html"}:
-                continue
+    text = str(value or "").strip()
+    if text:
+        for fmt in ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
             try:
-                content = part.get_content()
-            except Exception:  # noqa: BLE001
-                content = ""
-            if isinstance(content, str) and content.strip():
-                segments.append(content)
-    return "\n".join(segments)
+                naive = datetime.strptime(text, fmt)
+                return datetime.fromtimestamp(naive.timestamp(), tz=timezone.utc)
+            except ValueError:
+                continue
+
+    return datetime.now(timezone.utc)
 
 
-def _extract_doc_refs_from_message(message: EmailMessage, link_pattern: str) -> tuple[list[str], list[bytes]]:
-    message_text = _extract_message_text(message)
-    links = _extract_links_from_text(message_text)
+def _resolve_outlook_folder(namespace: Any, mailbox_name: str, folder_path: str) -> Any:
+    inbox_folder = None
+    if mailbox_name:
+        stores = namespace.Stores
+        for index in range(1, int(stores.Count) + 1):
+            store = stores.Item(index)
+            if str(getattr(store, "DisplayName", "") or "").strip().lower() == mailbox_name.lower():
+                inbox_folder = store.GetDefaultFolder(6)
+                break
+        if inbox_folder is None:
+            raise RuntimeError(f'Outlook mailbox "{mailbox_name}" not found')
+    else:
+        inbox_folder = namespace.GetDefaultFolder(6)
+
+    parts = [segment.strip() for segment in re.split(r"[\\/]+", folder_path) if segment.strip()]
+    if parts and parts[0].lower() == "inbox":
+        parts = parts[1:]
+
+    current = inbox_folder
+    for part in parts:
+        next_folder = None
+        folders = current.Folders
+        for index in range(1, int(folders.Count) + 1):
+            candidate = folders.Item(index)
+            if str(getattr(candidate, "Name", "") or "").strip().lower() == part.lower():
+                next_folder = candidate
+                break
+        if next_folder is None:
+            raise RuntimeError(f'Outlook folder "{folder_path}" not found under Inbox')
+        current = next_folder
+    return current
+
+
+def _extract_doc_refs_from_outlook_item(item: Any, link_pattern: str) -> tuple[list[str], list[tuple[str, bytes]]]:
+    text_segments: list[str] = []
+    for attribute in ("Body", "HTMLBody"):
+        value = str(getattr(item, attribute, "") or "").strip()
+        if value:
+            text_segments.append(value)
+
+    links = _extract_links_from_text("\n".join(text_segments))
     doc_refs: list[str] = []
-    doc_attachments: list[bytes] = []
-
     for link in links:
-        if re.search(link_pattern, link):
-            doc_refs.append(link)
-        elif ".docx" in link.lower():
-            doc_refs.append(link)
+        if re.search(link_pattern, link) or ".docx" in link.lower():
+            if link not in doc_refs:
+                doc_refs.append(link)
 
-    for part in message.walk():
-        if part.get_content_disposition() != "attachment":
+    attachment_payloads: list[tuple[str, bytes]] = []
+    attachments = getattr(item, "Attachments", None)
+    if attachments is None:
+        return doc_refs, attachment_payloads
+
+    for index in range(1, int(getattr(attachments, "Count", 0)) + 1):
+        attachment = attachments.Item(index)
+        filename = str(getattr(attachment, "FileName", "") or f"attachment-{index}.docx").strip()
+        if not filename.lower().endswith(".docx"):
             continue
-        filename = str(part.get_filename() or "").lower()
-        content_type = part.get_content_type().lower()
-        if filename.endswith(".docx") or "wordprocessingml.document" in content_type:
-            payload = part.get_payload(decode=True)
-            if isinstance(payload, (bytes, bytearray)) and payload:
-                doc_attachments.append(bytes(payload))
 
-    return doc_refs, doc_attachments
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="sla-release-", suffix=".docx", delete=False) as temp_file:
+                temp_path = Path(temp_file.name)
+            attachment.SaveAsFile(str(temp_path))
+            payload = temp_path.read_bytes()
+            if payload:
+                attachment_payloads.append((filename, payload))
+        except Exception:  # noqa: BLE001
+            continue
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    return doc_refs, attachment_payloads
 
 
 def _load_docx_bytes_from_ref(reference: str) -> bytes:
@@ -804,151 +867,148 @@ def _build_release_view() -> list[dict[str, Any]]:
     return combined
 
 
-def _sync_release_tracker_once(*, force: bool = False) -> dict[str, Any]:
-    with RELEASE_TRACKER_LOCK:
-        config = deepcopy(release_tracker_config)
-        existing_events = [deepcopy(item) for item in release_tracker_events]
+def _sync_release_tracker_win32(
+    config: dict[str, Any],
+    existing_events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not _is_windows_platform():
+        return {"ok": False, "imported": 0, "processed": 0, "message": "Win32 release tracker requires Windows."}
 
-    if not config.get("is_enabled") and not force:
-        return {"ok": True, "imported": 0, "processed": 0, "message": "Release tracker disabled"}
+    try:
+        import pythoncom  # type: ignore[import-not-found]
+        import win32com.client  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "imported": 0,
+            "processed": 0,
+            "message": f"pywin32 is required for release tracker: {exc}",
+        }
 
-    imap_host = str(config.get("imap_host") or "").strip()
-    imap_username = str(config.get("imap_username") or "").strip()
-    imap_password = _secret_from_env(str(config.get("imap_password_env_key") or ""))
-    if not imap_host or not imap_username or not imap_password:
-        missing = []
-        if not imap_host:
-            missing.append("imap_host")
-        if not imap_username:
-            missing.append("imap_username")
-        if not imap_password:
-            missing.append("imap_password_env_key")
-        message = f"Release tracker config incomplete: {', '.join(missing)}"
-        with RELEASE_TRACKER_LOCK:
-            release_tracker_config["last_error"] = message
-            release_tracker_config["last_run_at"] = datetime.now(timezone.utc).isoformat()
-        _save_release_tracker_config()
-        return {"ok": False, "imported": 0, "processed": 0, "message": message}
-
-    mailbox = str(config.get("imap_mailbox") or "INBOX")
-    subject_filter = str(config.get("subject_filter") or "").strip()
-    sender_filter = str(config.get("sender_filter") or "").strip()
+    subject_filter = str(config.get("subject_filter") or "").strip().lower()
+    sender_filter = str(config.get("sender_filter") or "").strip().lower()
     doc_link_regex = str(config.get("doc_link_regex") or RELEASE_TRACKER_DEFAULTS["doc_link_regex"])
     deployment_path_regex = str(config.get("deployment_path_regex") or RELEASE_TRACKER_DEFAULTS["deployment_path_regex"])
     only_unseen = bool(config.get("only_unseen"))
     mark_seen = bool(config.get("mark_seen"))
-    last_uid = _coerce_int(config.get("last_uid"), 0, 0, 2_147_483_647)
+    only_newer = bool(config.get("only_newer_than_last_run"))
+    mailbox_name = str(config.get("outlook_mailbox") or "").strip()
+    folder_path = str(config.get("outlook_folder_path") or "Inbox").strip() or "Inbox"
 
+    last_processed_at = _parse_checked_at(str(config.get("last_processed_at") or ""))
     dedupe_keys = {(str(item.get("source_uid") or ""), str(item.get("deployment_file_path") or "")) for item in existing_events}
 
     imported_count = 0
     processed_count = 0
-    highest_uid = last_uid
     new_events: list[dict[str, Any]] = []
     parse_errors: list[str] = []
+    latest_processed_at = last_processed_at
 
+    pythoncom.CoInitialize()
     try:
-        with imaplib.IMAP4_SSL(imap_host, int(config.get("imap_port") or 993)) as imap:
-            imap.login(imap_username, imap_password)
-            status, _ = imap.select(mailbox, readonly=not mark_seen)
-            if status != "OK":
-                raise RuntimeError(f"Unable to select mailbox {mailbox}")
+        namespace = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
+        folder = _resolve_outlook_folder(namespace, mailbox_name, folder_path)
+        items = folder.Items
+        items.Sort("[ReceivedTime]", False)
 
-            criteria: list[str] = ["UNSEEN"] if only_unseen else ["ALL"]
-            if subject_filter:
-                criteria += ["SUBJECT", subject_filter]
-            if sender_filter:
-                criteria += ["FROM", sender_filter]
+        total_items = int(getattr(items, "Count", 0))
+        for index in range(1, total_items + 1):
+            try:
+                item = items.Item(index)
+            except Exception:  # noqa: BLE001
+                continue
 
-            status, raw_ids = imap.uid("search", None, *criteria)
-            if status != "OK":
-                raise RuntimeError("IMAP search failed")
+            if str(getattr(item, "MessageClass", "") or "").strip().lower() != "ipm.note":
+                continue
 
-            uid_values = [int(part) for part in (raw_ids[0].split() if raw_ids and raw_ids[0] else []) if part.isdigit()]
-            uid_values.sort()
-            for uid in uid_values:
-                if uid <= last_uid:
-                    continue
+            subject = str(getattr(item, "Subject", "") or "").strip() or "Deployment"
+            sender_name = str(getattr(item, "SenderName", "") or "").strip()
+            sender_email = str(getattr(item, "SenderEmailAddress", "") or "").strip()
+            sender_value = f"{sender_name} {sender_email}".strip().lower()
+            if subject_filter and subject_filter not in subject.lower():
+                continue
+            if sender_filter and sender_filter not in sender_value:
+                continue
+            if only_unseen and not bool(getattr(item, "Unread", False)):
+                continue
 
-                status, data = imap.uid("fetch", str(uid), "(RFC822)")
-                if status != "OK" or not data:
-                    continue
-                raw_message = None
-                for part in data:
-                    if isinstance(part, tuple) and len(part) >= 2:
-                        raw_message = part[1]
-                        break
-                if not raw_message:
-                    continue
+            received_at = _coerce_outlook_datetime(getattr(item, "ReceivedTime", None))
+            if only_newer and last_processed_at is not None and received_at <= last_processed_at:
+                continue
 
-                processed_count += 1
-                highest_uid = max(highest_uid, uid)
-                message = BytesParser(policy=policy.default).parsebytes(raw_message)
-                sender_name, sender_email = parseaddr(str(message.get("from") or ""))
-                deployed_by = sender_name.strip() or sender_email.strip() or "Email Ingest"
-                subject = str(message.get("subject") or "Deployment")
-                date_header = str(message.get("date") or "")
+            source_uid = str(getattr(item, "EntryID", "") or "").strip()
+            if not source_uid:
+                source_uid = f"outlook-item-{index}-{int(received_at.timestamp())}"
+
+            processed_count += 1
+            if latest_processed_at is None or received_at > latest_processed_at:
+                latest_processed_at = received_at
+
+            deployed_by = sender_name or sender_email or "Email Ingest"
+            deployed_at_label = received_at.strftime("%Y-%m-%d %H:%M")
+            doc_refs, doc_attachments = _extract_doc_refs_from_outlook_item(item, doc_link_regex)
+
+            doc_payloads: list[tuple[str, bytes]] = []
+            for ref in doc_refs:
                 try:
-                    deployed_at_dt = parsedate_to_datetime(date_header).astimezone(timezone.utc)
-                except Exception:  # noqa: BLE001
-                    deployed_at_dt = datetime.now(timezone.utc)
-                deployed_at_label = deployed_at_dt.strftime("%Y-%m-%d %H:%M")
+                    doc_payloads.append((ref, _load_docx_bytes_from_ref(ref)))
+                except Exception as exc:  # noqa: BLE001
+                    parse_errors.append(f"{source_uid}: unable to load doc link {ref} ({exc})")
+            for filename, payload in doc_attachments:
+                doc_payloads.append((filename, payload))
 
-                doc_refs, doc_attachments = _extract_doc_refs_from_message(message, doc_link_regex)
-                doc_payloads: list[tuple[str, bytes]] = []
-                for ref in doc_refs:
-                    try:
-                        doc_payloads.append((ref, _load_docx_bytes_from_ref(ref)))
-                    except Exception as exc:  # noqa: BLE001
-                        parse_errors.append(f"UID {uid}: unable to load doc link {ref} ({exc})")
-                for index, payload in enumerate(doc_attachments, start=1):
-                    doc_payloads.append((f"attachment-{index}.docx", payload))
-
-                for source_ref, payload in doc_payloads:
+            for source_ref, payload in doc_payloads:
+                try:
                     doc_text = _extract_text_from_docx_bytes(payload)
-                    deployment_paths = _extract_deployment_paths_from_text(doc_text, deployment_path_regex)
-                    for deployment_path in deployment_paths:
-                        dedupe = (str(uid), deployment_path)
-                        if dedupe in dedupe_keys:
-                            continue
+                except Exception as exc:  # noqa: BLE001
+                    parse_errors.append(f"{source_uid}: unable to read {source_ref} ({exc})")
+                    continue
+                deployment_paths = _extract_deployment_paths_from_text(doc_text, deployment_path_regex)
+                for deployment_path in deployment_paths:
+                    dedupe = (source_uid, deployment_path)
+                    if dedupe in dedupe_keys:
+                        continue
 
-                        version_match = re.search(r"v\d+\.\d+\.\d+(?:[-+._A-Za-z0-9]*)?", subject, flags=re.IGNORECASE)
-                        version = version_match.group(0) if version_match else "n/a"
-                        event = {
-                            "id": uuid4().hex,
-                            "version": version,
-                            "name": subject[:160] or "Imported Deployment",
-                            "status": "deployed",
-                            "environment": _infer_release_environment(deployment_path),
-                            "deployed_by": deployed_by[:80],
-                            "deployed_at": deployed_at_label,
-                            "services": 1,
-                            "commits": 0,
-                            "deployment_file_path": deployment_path,
-                            "source_uid": str(uid),
-                            "source_subject": subject,
-                            "source_doc_ref": source_ref,
-                            "imported_at": datetime.now(timezone.utc).isoformat(),
-                        }
-                        normalized_event = _normalize_release_tracker_event(event)
-                        if normalized_event is None:
-                            continue
-                        new_events.append(normalized_event)
-                        dedupe_keys.add(dedupe)
-                        imported_count += 1
+                    version_match = re.search(r"v\d+\.\d+\.\d+(?:[-+._A-Za-z0-9]*)?", subject, flags=re.IGNORECASE)
+                    version = version_match.group(0) if version_match else "n/a"
+                    event = {
+                        "id": uuid4().hex,
+                        "version": version,
+                        "name": subject[:160] or "Imported Deployment",
+                        "status": "deployed",
+                        "environment": _infer_release_environment(deployment_path),
+                        "deployed_by": deployed_by[:80],
+                        "deployed_at": deployed_at_label,
+                        "services": 1,
+                        "commits": 0,
+                        "deployment_file_path": deployment_path,
+                        "source_uid": source_uid,
+                        "source_subject": subject,
+                        "source_doc_ref": source_ref,
+                        "imported_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    normalized_event = _normalize_release_tracker_event(event)
+                    if normalized_event is None:
+                        continue
+                    new_events.append(normalized_event)
+                    dedupe_keys.add(dedupe)
+                    imported_count += 1
 
-                if mark_seen:
-                    imap.uid("store", str(uid), "+FLAGS", "(\\Seen)")
+            if mark_seen:
+                try:
+                    item.Unread = False
+                    item.Save()
+                except Exception:  # noqa: BLE001
+                    pass
     except Exception as exc:  # noqa: BLE001
-        message = str(exc)
-        with RELEASE_TRACKER_LOCK:
-            release_tracker_config["last_error"] = message
-            release_tracker_config["last_run_at"] = datetime.now(timezone.utc).isoformat()
-        _save_release_tracker_config()
-        return {"ok": False, "imported": imported_count, "processed": processed_count, "message": message}
+        return {"ok": False, "imported": imported_count, "processed": processed_count, "message": str(exc)}
+    finally:
+        pythoncom.CoUninitialize()
 
     with RELEASE_TRACKER_LOCK:
-        release_tracker_config["last_uid"] = highest_uid
+        release_tracker_config["last_processed_at"] = (
+            latest_processed_at.isoformat() if latest_processed_at is not None else ""
+        )
         release_tracker_config["last_run_at"] = datetime.now(timezone.utc).isoformat()
         release_tracker_config["last_error"] = "; ".join(parse_errors[-4:]) if parse_errors else ""
         if new_events:
@@ -960,12 +1020,32 @@ def _sync_release_tracker_once(*, force: bool = False) -> dict[str, Any]:
     if new_events:
         _save_release_tracker_events()
 
-    return {
-        "ok": True,
-        "imported": imported_count,
-        "processed": processed_count,
-        "message": "Sync complete",
-    }
+    return {"ok": True, "imported": imported_count, "processed": processed_count, "message": "Sync complete"}
+
+
+def _sync_release_tracker_once(*, force: bool = False) -> dict[str, Any]:
+    with RELEASE_TRACKER_LOCK:
+        config = deepcopy(release_tracker_config)
+        existing_events = [deepcopy(item) for item in release_tracker_events]
+
+    if not config.get("is_enabled") and not force:
+        return {"ok": True, "imported": 0, "processed": 0, "message": "Release tracker disabled"}
+
+    if str(config.get("provider") or "win32").lower() != "win32":
+        message = "Unsupported release tracker provider."
+        with RELEASE_TRACKER_LOCK:
+            release_tracker_config["last_error"] = message
+            release_tracker_config["last_run_at"] = datetime.now(timezone.utc).isoformat()
+        _save_release_tracker_config()
+        return {"ok": False, "imported": 0, "processed": 0, "message": message}
+
+    result = _sync_release_tracker_win32(config, existing_events)
+    if not result.get("ok"):
+        with RELEASE_TRACKER_LOCK:
+            release_tracker_config["last_error"] = str(result.get("message") or "Unknown error")
+            release_tracker_config["last_run_at"] = datetime.now(timezone.utc).isoformat()
+        _save_release_tracker_config()
+    return result
 
 
 def _find_server_health_check(check_id: str) -> tuple[int, dict[str, Any] | None]:
@@ -1728,6 +1808,17 @@ def _start_background_release_tracker() -> None:
         _release_tracker_thread.start()
 
 
+def _win32_release_tracker_status() -> tuple[bool, str]:
+    if not _is_windows_platform():
+        return False, "Win32 release tracker requires Windows."
+    try:
+        import pythoncom  # type: ignore[import-not-found]
+        import win32com.client  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        return False, f"pywin32 is not available: {exc}"
+    return True, ""
+
+
 @app.before_request
 def ensure_background_checker_started() -> None:
     _start_background_health_checker()
@@ -1815,9 +1906,11 @@ def releases() -> str:
     with RELEASE_TRACKER_LOCK:
         tracker_snapshot = dict(release_tracker_config)
 
+    win32_ready, win32_status = _win32_release_tracker_status()
     tracker_for_view = {
         **tracker_snapshot,
-        "has_imap_password": _has_secret(str(tracker_snapshot.get("imap_password_env_key") or "")),
+        "win32_ready": win32_ready,
+        "win32_status": win32_status,
     }
 
     notice_code = request.args.get("notice")
@@ -1854,11 +1947,10 @@ def update_release_tracker_config() -> Any:
         existing = dict(release_tracker_config)
 
     updated = dict(existing)
+    updated["provider"] = "win32"
     updated["is_enabled"] = request.form.get("is_enabled") == "on"
-    updated["imap_host"] = str(request.form.get("imap_host", "")).strip()
-    updated["imap_port"] = _coerce_int(request.form.get("imap_port"), 993, 1, 65535)
-    updated["imap_username"] = str(request.form.get("imap_username", "")).strip()
-    updated["imap_mailbox"] = str(request.form.get("imap_mailbox", "INBOX")).strip() or "INBOX"
+    updated["outlook_mailbox"] = str(request.form.get("outlook_mailbox", "")).strip()
+    updated["outlook_folder_path"] = str(request.form.get("outlook_folder_path", "Inbox")).strip() or "Inbox"
     updated["subject_filter"] = str(request.form.get("subject_filter", "")).strip()
     updated["sender_filter"] = str(request.form.get("sender_filter", "")).strip()
     updated["doc_link_regex"] = (
@@ -1876,15 +1968,8 @@ def update_release_tracker_config() -> Any:
     )
     updated["only_unseen"] = request.form.get("only_unseen") == "on"
     updated["mark_seen"] = request.form.get("mark_seen") == "on"
+    updated["only_newer_than_last_run"] = request.form.get("only_newer_than_last_run") == "on"
     updated["poll_interval_seconds"] = _coerce_int(request.form.get("poll_interval_seconds"), 180, 30, 86_400)
-    updated["imap_password_env_key"] = (
-        str(request.form.get("imap_password_env_key", "")).strip()
-        or str(existing.get("imap_password_env_key") or RELEASE_TRACKER_DEFAULTS["imap_password_env_key"])
-    )
-
-    posted_password = str(request.form.get("imap_password", ""))
-    if posted_password:
-        _upsert_env_value(updated["imap_password_env_key"], posted_password)
 
     try:
         re.compile(updated["doc_link_regex"])
@@ -1893,7 +1978,8 @@ def update_release_tracker_config() -> Any:
         return redirect(url_for("releases", notice="release-config-invalid"))
 
     if updated["is_enabled"]:
-        if not updated["imap_host"] or not updated["imap_username"] or not _has_secret(updated["imap_password_env_key"]):
+        win32_ready, _ = _win32_release_tracker_status()
+        if not win32_ready:
             return redirect(url_for("releases", notice="release-config-invalid"))
 
     normalized = _normalize_release_tracker_config(updated)

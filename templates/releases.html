@@ -18,11 +18,17 @@
     <div class="inline-stats">
       <span><b>{{ 'ON' if release_tracker.is_enabled else 'OFF' }}</b> tracker</span>
       <span><b>{{ release_tracker.poll_interval_seconds }}</b>s interval</span>
-      <span><b>{{ release_tracker.imap_mailbox }}</b> mailbox</span>
-      <span><b>{{ release_tracker.last_uid }}</b> last UID</span>
+      <span><b>{{ release_tracker.outlook_mailbox or 'Default mailbox' }}</b> mailbox</span>
+      <span><b>{{ release_tracker.outlook_folder_path }}</b> folder</span>
     </div>
+    {% if release_tracker.last_processed_at %}
+    <p class="subtle">Last processed email (UTC): <span class="mono">{{ release_tracker.last_processed_at }}</span></p>
+    {% endif %}
     {% if release_tracker.last_run_at %}
     <p class="subtle">Last run (UTC): <span class="mono">{{ release_tracker.last_run_at }}</span></p>
+    {% endif %}
+    {% if not release_tracker.win32_ready %}
+    <p class="subtle error-text">{{ release_tracker.win32_status }}</p>
     {% endif %}
     {% if release_tracker.last_error %}
     <p class="subtle error-text">{{ release_tracker.last_error }}</p>
@@ -49,36 +55,24 @@
   <form method="post" action="/config/releases/update" class="config-form">
     <div class="form-grid cols-2">
       <label>
-        <span>IMAP Host</span>
-        <input name="imap_host" required placeholder="imap.office365.com" value="{{ release_tracker.imap_host }}" />
+        <span>Provider</span>
+        <input value="Outlook Win32 (pywin32)" disabled />
       </label>
       <label>
-        <span>IMAP Port</span>
-        <input name="imap_port" type="number" min="1" max="65535" value="{{ release_tracker.imap_port }}" />
+        <span>Outlook Mailbox <small>(optional display name)</small></span>
+        <input name="outlook_mailbox" placeholder="shared-mailbox@company.com" value="{{ release_tracker.outlook_mailbox }}" />
       </label>
       <label>
-        <span>IMAP Username</span>
-        <input name="imap_username" required placeholder="you@company.com" value="{{ release_tracker.imap_username }}" />
+        <span>Outlook Folder Path</span>
+        <input name="outlook_folder_path" placeholder="Inbox\\Deployments" value="{{ release_tracker.outlook_folder_path }}" />
       </label>
       <label>
-        <span>IMAP Password Env Key</span>
-        <input name="imap_password_env_key" value="{{ release_tracker.imap_password_env_key }}" />
-      </label>
-      <label>
-        <span>IMAP Password {% if release_tracker.has_imap_password %}<small>(leave blank to keep)</small>{% endif %}</span>
-        <input name="imap_password" type="password" placeholder="{% if release_tracker.has_imap_password %}Saved in .env{% else %}••••••••{% endif %}" />
-      </label>
-      <label>
-        <span>Mailbox</span>
-        <input name="imap_mailbox" value="{{ release_tracker.imap_mailbox }}" placeholder="INBOX" />
+        <span>Email Sender Filter</span>
+        <input name="sender_filter" value="{{ release_tracker.sender_filter }}" placeholder="release-bot@company.com" />
       </label>
       <label>
         <span>Email Subject Filter</span>
         <input name="subject_filter" value="{{ release_tracker.subject_filter }}" placeholder="Deployment" />
-      </label>
-      <label>
-        <span>Email Sender Filter</span>
-        <input name="sender_filter" value="{{ release_tracker.sender_filter }}" placeholder="deploy-bot@company.com" />
       </label>
       <label>
         <span>Word Doc Link Regex</span>
@@ -98,6 +92,7 @@
       <label><input type="checkbox" name="is_enabled" {% if release_tracker.is_enabled %}checked{% endif %} /> Enable tracker</label>
       <label><input type="checkbox" name="only_unseen" {% if release_tracker.only_unseen %}checked{% endif %} /> Only unread emails</label>
       <label><input type="checkbox" name="mark_seen" {% if release_tracker.mark_seen %}checked{% endif %} /> Mark emails as seen after processing</label>
+      <label><input type="checkbox" name="only_newer_than_last_run" {% if release_tracker.only_newer_than_last_run %}checked{% endif %} /> Only emails newer than last run</label>
     </div>
 
     <div class="section-row">
