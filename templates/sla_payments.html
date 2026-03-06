@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="grid stats-grid cols-4">
+  <article class="panel stat total">
+    <div>
+      <p class="label">Total SLA Credits</p>
+      <p class="value purple">${{ '{:,}'.format(totals.total) }}</p>
+    </div>
+    <i data-lucide="dollar-sign"></i>
+  </article>
+  <article class="panel stat warning">
+    <div>
+      <p class="label">Pending</p>
+      <p class="value yellow">${{ '{:,}'.format(totals.pending) }}</p>
+    </div>
+    <i data-lucide="clock-3"></i>
+  </article>
+  <article class="panel stat processing">
+    <div>
+      <p class="label">Processing</p>
+      <p class="value blue">${{ '{:,}'.format(totals.processing) }}</p>
+    </div>
+    <i data-lucide="refresh-cw"></i>
+  </article>
+  <article class="panel stat healthy">
+    <div>
+      <p class="label">Completed</p>
+      <p class="value green">${{ '{:,}'.format(totals.completed) }}</p>
+    </div>
+    <i data-lucide="check-circle-2"></i>
+  </article>
+</section>
+
+<section class="panel">
+  <h2 class="section-title">
+    <i data-lucide="trending-down"></i>
+    SLA Payment Reprocessing Queue
+  </h2>
+
+  <div class="list-stack">
+    {% for payment in payments %}
+    <article class="payment-card {{ payment.status }}" data-payment-card data-payment-id="{{ payment.id }}">
+      <div class="payment-head">
+        <div>
+          <div class="payment-title-wrap">
+            <h3>{{ payment.customer }}</h3>
+            <span class="mono token">{{ payment.id }}</span>
+          </div>
+          <p class="subtle">{{ payment.reason }}</p>
+          <p class="violation"><i data-lucide="triangle-alert"></i> {{ payment.sla_violation }}</p>
+        </div>
+
+        <div class="amount-wrap">
+          <p class="amount">${{ '{:,}'.format(payment.amount) }}</p>
+          <span class="status-pill {{ payment.status }}" data-status-badge>
+            {{ payment.status|upper }}
+          </span>
+        </div>
+      </div>
+
+      <div class="grid payment-meta cols-3">
+        <div><p>Incident ID</p><b class="mono">{{ payment.incident_id }}</b></div>
+        <div><p>Downtime</p><b class="mono">{{ payment.downtime }} minutes</b></div>
+        <div><p>Submitted</p><b class="mono">{{ payment.submitted_at }}</b></div>
+      </div>
+
+      <div class="button-row">
+        {% if payment.status in ['failed', 'pending'] %}
+        <button class="btn primary js-reprocess" data-payment-id="{{ payment.id }}">
+          <i data-lucide="refresh-cw"></i>
+          {% if payment.status == 'failed' %}Reprocess Payment{% else %}Approve & Process{% endif %}
+        </button>
+        {% endif %}
+        <button class="btn">View Details</button>
+      </div>
+
+      <div class="progress-track {% if payment.status != 'processing' %}hidden{% endif %}" data-progress>
+        <div class="progress-fill processing"></div>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

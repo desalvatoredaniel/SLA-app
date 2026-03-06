@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ page_title }} | NEXUS COMMAND</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body data-page="{{ active_page }}">
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="container header-content">
+          <div class="brand">
+            <div class="brand-icon"><i data-lucide="activity"></i></div>
+            <div>
+              <h1>NEXUS COMMAND</h1>
+              <p>Infrastructure Intelligence Platform</p>
+            </div>
+          </div>
+
+          <nav class="top-nav">
+            <a href="/" class="nav-link {% if active_page == 'server-health' %}active{% endif %}">
+              <i data-lucide="activity"></i>
+              Server Health
+            </a>
+            <a href="/releases" class="nav-link {% if active_page == 'releases' %}active{% endif %}">
+              <i data-lucide="package"></i>
+              Releases
+            </a>
+            <a href="/sla-payments" class="nav-link {% if active_page == 'sla-payments' %}active{% endif %}">
+              <i data-lucide="dollar-sign"></i>
+              SLA Payments
+            </a>
+            <a href="/config/server-health" class="nav-link {% if active_page == 'config-server-health' %}active{% endif %}">
+              <i data-lucide="settings"></i>
+              Config
+            </a>
+          </nav>
+        </div>
+      </header>
+
+      <main class="container main-content">{% block content %}{% endblock %}</main>
+    </div>
+
+    <script src="https://unpkg.com/lucide@0.487.0/dist/umd/lucide.min.js"></script>
+    <script>
+      lucide.createIcons();
+    </script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>

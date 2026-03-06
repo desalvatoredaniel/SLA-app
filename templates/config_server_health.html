@@ -1,0 +1,290 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel config-header">
+  <div>
+    <h2 class="section-title">
+      <i data-lucide="server-cog"></i>
+      Server Health Configuration
+    </h2>
+    <p class="subtle">
+      Add target health endpoints, auth credentials, and expected response codes. Use Test to verify targets are up.
+    </p>
+    <p class="subtle">Credential secrets are stored in <span class="mono">{{ env_path }}</span>.</p>
+    <p class="subtle">Background checks run continuously every <span class="mono">{{ health_check_interval_seconds }}</span>s.</p>
+    {% if not smtp_configured %}
+    <p class="subtle error-text">SMTP is not configured yet. Email alerts will not send until SMTP env vars are set.</p>
+    {% endif %}
+  </div>
+
+  <div class="inline-stats">
+    <span><b>{{ health_config_stats.configured }}</b> configured</span>
+    <span><b>{{ health_config_stats.enabled }}</b> enabled</span>
+    <span><b>{{ health_config_stats.up }}</b> up</span>
+    <span><b>{{ health_config_stats.down }}</b> down</span>
+  </div>
+</section>
+
+{% if notice_text %}
+<section class="panel notice-panel">
+  <p>{{ notice_text }}</p>
+</section>
+{% endif %}
+
+<section class="grid stats-grid cols-3">
+  <article class="panel aspect-card active">
+    <h3><i data-lucide="activity"></i> Server Health</h3>
+    <p>Active. Configure endpoint URL + credentials and run availability checks.</p>
+  </article>
+  <article class="panel aspect-card muted">
+    <h3><i data-lucide="package"></i> Releases</h3>
+    <p>Next. Release source/API configuration will be added here.</p>
+  </article>
+  <article class="panel aspect-card muted">
+    <h3><i data-lucide="dollar-sign"></i> SLA Payments</h3>
+    <p>Next. Payment processor and SLA source configuration will be added here.</p>
+  </article>
+</section>
+
+<section class="panel">
+  <div class="section-row">
+    <h2 class="section-title">
+      <i data-lucide="plus-circle"></i>
+      Add Server Health Check
+    </h2>
+  </div>
+
+  <form method="post" action="/config/server-health/add" class="config-form js-health-check-form">
+    <div class="form-grid cols-2">
+      <label>
+        <span>Name</span>
+        <input name="name" required placeholder="API Gateway Primary" />
+      </label>
+      <label>
+        <span>URL</span>
+        <input name="url" type="url" required placeholder="https://api.example.com/health" />
+      </label>
+      <label>
+        <span>Method</span>
+        <select name="method">
+          <option value="GET" selected>GET</option>
+          <option value="HEAD">HEAD</option>
+        </select>
+      </label>
+      <label>
+        <span>Auth Type</span>
+        <select name="auth_type" data-auth-select>
+          <option value="none" selected>None</option>
+          <option value="basic">Basic Auth</option>
+          <option value="bearer">Bearer Token</option>
+        </select>
+      </label>
+      <label data-auth-group="basic" class="hidden">
+        <span>Username</span>
+        <input name="username" placeholder="healthcheck-user" />
+      </label>
+      <label data-auth-group="basic" class="hidden">
+        <span>Password</span>
+        <input name="password" type="password" placeholder="••••••••" />
+      </label>
+      <label data-auth-group="bearer" class="hidden full-width">
+        <span>Bearer Token</span>
+        <input name="bearer_token" type="password" placeholder="Bearer token" />
+      </label>
+      <label>
+        <span>Timeout (seconds)</span>
+        <input name="timeout_seconds" type="number" min="1" max="30" step="0.5" value="5" />
+      </label>
+      <label>
+        <span>Expected HTTP Status</span>
+        <input name="expected_status" type="number" min="100" max="599" value="200" />
+      </label>
+      <label class="full-width">
+        <span>Email Recipients (comma separated)</span>
+        <input name="alert_recipients" placeholder="ops@example.com, sre@example.com" />
+      </label>
+    </div>
+
+    <div class="checkbox-row">
+      <label class="checkbox">
+        <input name="verify_tls" type="checkbox" checked />
+        Verify TLS certificate
+      </label>
+      <label class="checkbox">
+        <input name="is_enabled" type="checkbox" checked />
+        Enabled
+      </label>
+      <label class="checkbox">
+        <input name="email_alerts_enabled" type="checkbox" />
+        Email alerts on DOWN
+      </label>
+      <label class="checkbox">
+        <input name="alert_on_recovery" type="checkbox" checked />
+        Email alerts on RECOVERY
+      </label>
+    </div>
+
+    <div class="button-row">
+      <button class="btn primary" type="submit">
+        <i data-lucide="save"></i>
+        Save Check
+      </button>
+    </div>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="section-row">
+    <h2 class="section-title">
+      <i data-lucide="list-checks"></i>
+      Existing Server Health Checks
+    </h2>
+    <form method="post" action="/config/server-health/test-all">
+      <button type="submit" class="btn">
+        <i data-lucide="play-circle"></i>
+        Test All Enabled
+      </button>
+    </form>
+  </div>
+
+  {% if checks %}
+  <div class="list-stack">
+    {% for check in checks %}
+    <article class="config-item panel">
+      <form method="post" action="/config/server-health/{{ check.id }}/update" class="config-form js-health-check-form">
+        <div class="form-grid cols-2">
+          <label>
+            <span>Name</span>
+            <input name="name" required value="{{ check.name }}" />
+          </label>
+          <label>
+            <span>URL</span>
+            <input name="url" type="url" required value="{{ check.url }}" />
+          </label>
+          <label>
+            <span>Method</span>
+            <select name="method">
+              <option value="GET" {% if check.method == 'GET' %}selected{% endif %}>GET</option>
+              <option value="HEAD" {% if check.method == 'HEAD' %}selected{% endif %}>HEAD</option>
+            </select>
+          </label>
+          <label>
+            <span>Auth Type</span>
+            <select name="auth_type" data-auth-select>
+              <option value="none" {% if check.auth_type == 'none' %}selected{% endif %}>None</option>
+              <option value="basic" {% if check.auth_type == 'basic' %}selected{% endif %}>Basic Auth</option>
+              <option value="bearer" {% if check.auth_type == 'bearer' %}selected{% endif %}>Bearer Token</option>
+            </select>
+          </label>
+          <label data-auth-group="basic" {% if check.auth_type != 'basic' %}class="hidden"{% endif %}>
+            <span>Username</span>
+            <input name="username" value="{{ check.username }}" placeholder="healthcheck-user" />
+          </label>
+          <label data-auth-group="basic" {% if check.auth_type != 'basic' %}class="hidden"{% endif %}>
+            <span>Password {% if check.has_password_secret %}<small>(leave blank to keep)</small>{% endif %}</span>
+            <input name="password" type="password" placeholder="{% if check.has_password_secret %}Saved in .env{% else %}••••••••{% endif %}" />
+          </label>
+          <label data-auth-group="bearer" class="full-width {% if check.auth_type != 'bearer' %}hidden{% endif %}">
+            <span>Bearer Token {% if check.has_bearer_secret %}<small>(leave blank to keep)</small>{% endif %}</span>
+            <input name="bearer_token" type="password" placeholder="{% if check.has_bearer_secret %}Saved in .env{% else %}Bearer token{% endif %}" />
+          </label>
+          <label>
+            <span>Timeout (seconds)</span>
+            <input name="timeout_seconds" type="number" min="1" max="30" step="0.5" value="{{ check.timeout_seconds }}" />
+          </label>
+          <label>
+            <span>Expected HTTP Status</span>
+            <input name="expected_status" type="number" min="100" max="599" value="{{ check.expected_status }}" />
+          </label>
+          <label class="full-width">
+            <span>Email Recipients (comma separated)</span>
+            <input name="alert_recipients" value="{{ check.alert_recipients }}" placeholder="ops@example.com, sre@example.com" />
+          </label>
+        </div>
+
+        <div class="checkbox-row">
+          <label class="checkbox">
+            <input name="verify_tls" type="checkbox" {% if check.verify_tls %}checked{% endif %} />
+            Verify TLS certificate
+          </label>
+          <label class="checkbox">
+            <input name="is_enabled" type="checkbox" {% if check.is_enabled %}checked{% endif %} />
+            Enabled
+          </label>
+          <label class="checkbox">
+            <input name="email_alerts_enabled" type="checkbox" {% if check.email_alerts_enabled %}checked{% endif %} />
+            Email alerts on DOWN
+          </label>
+          <label class="checkbox">
+            <input name="alert_on_recovery" type="checkbox" {% if check.alert_on_recovery %}checked{% endif %} />
+            Email alerts on RECOVERY
+          </label>
+        </div>
+
+        <div class="button-row">
+          <button class="btn primary" type="submit">
+            <i data-lucide="save"></i>
+            Save
+          </button>
+        </div>
+      </form>
+
+      <div class="section-row top-gap">
+        <div class="check-result">
+          {% if check.auth_type == 'basic' and check.password_env_key %}
+          <span class="mono">Password key: {{ check.password_env_key }}</span>
+          {% endif %}
+          {% if check.auth_type == 'bearer' and check.bearer_token_env_key %}
+          <span class="mono">Token key: {{ check.bearer_token_env_key }}</span>
+          {% endif %}
+          {% if check.last_check %}
+            {% if check.last_check.is_up %}
+            <span class="status-pill healthy">UP</span>
+            {% else %}
+            <span class="status-pill critical">DOWN</span>
+            {% endif %}
+            <span class="mono">HTTP {{ check.last_check.http_status if check.last_check.http_status else 'N/A' }}</span>
+            <span class="mono">{{ check.last_check.response_ms }}ms</span>
+            <span class="mono">{{ check.last_check.checked_at }}</span>
+            {% if check.last_check.error %}
+            <span class="error-text">{{ check.last_check.error }}</span>
+            {% endif %}
+          {% else %}
+          <span class="subtle">No check run yet.</span>
+          {% endif %}
+          {% if check.last_alert %}
+            {% if check.last_alert.sent %}
+            <span class="status-pill healthy">ALERT SENT</span>
+            {% else %}
+            <span class="status-pill critical">ALERT FAILED</span>
+            {% endif %}
+            <span class="mono">{{ check.last_alert.status|upper }}</span>
+            <span class="mono">{{ check.last_alert.sent_at }}</span>
+            {% if check.last_alert.error %}
+            <span class="error-text">{{ check.last_alert.error }}</span>
+            {% endif %}
+          {% endif %}
+        </div>
+
+        <div class="button-row compact">
+          <form method="post" action="/config/server-health/{{ check.id }}/test">
+            <button type="submit" class="btn">
+              <i data-lucide="play-circle"></i>
+              Test
+            </button>
+          </form>
+          <form method="post" action="/config/server-health/{{ check.id }}/delete" onsubmit="return confirm('Delete this server health check?');">
+            <button type="submit" class="btn danger">
+              <i data-lucide="trash-2"></i>
+              Delete
+            </button>
+          </form>
+        </div>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="subtle">No server health checks configured yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

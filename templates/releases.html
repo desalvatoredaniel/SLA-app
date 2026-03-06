@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="grid stats-grid cols-3">
+  <article class="panel stat healthy">
+    <div>
+      <p class="label">Deployed</p>
+      <p class="value green">{{ stats.deployed }}</p>
+    </div>
+    <i data-lucide="check-circle-2"></i>
+  </article>
+  <article class="panel stat processing">
+    <div>
+      <p class="label">In Progress</p>
+      <p class="value blue">{{ stats.in_progress }}</p>
+    </div>
+    <i data-lucide="clock-3"></i>
+  </article>
+  <article class="panel stat scheduled">
+    <div>
+      <p class="label">Scheduled</p>
+      <p class="value purple">{{ stats.scheduled }}</p>
+    </div>
+    <i data-lucide="calendar"></i>
+  </article>
+</section>
+
+<section class="panel">
+  <h2 class="section-title">
+    <i data-lucide="package"></i>
+    Release Timeline
+  </h2>
+
+  <div class="list-stack">
+    {% for release in releases %}
+    <article class="release-card {{ release.status }}">
+      <span class="status-line"></span>
+      <div class="release-header">
+        <div>
+          <div class="release-title-wrap">
+            <span class="release-icon">
+              {% if release.status == 'deployed' %}<i data-lucide="check-circle-2"></i>{% endif %}
+              {% if release.status == 'in-progress' %}<i data-lucide="clock-3"></i>{% endif %}
+              {% if release.status == 'scheduled' %}<i data-lucide="calendar"></i>{% endif %}
+              {% if release.status == 'failed' %}<i data-lucide="alert-circle"></i>{% endif %}
+            </span>
+            <h3>{{ release.version }}</h3>
+            <span class="env-pill {{ release.environment }}">{{ release.environment }}</span>
+          </div>
+          <p class="subtle">{{ release.name }}</p>
+        </div>
+        <span class="status-pill {{ release.status }}">{{ release.status|replace('-', ' ')|upper }}</span>
+      </div>
+
+      <div class="grid release-meta cols-4">
+        <div><p>Deployed By</p><b class="mono">{{ release.deployed_by }}</b></div>
+        <div><p>Time</p><b class="mono">{{ release.deployed_at }}</b></div>
+        <div><p>Services</p><b class="mono">{{ release.services }} updated</b></div>
+        <div><p>Commits</p><b class="mono">{{ release.commits }} changes</b></div>
+      </div>
+
+      {% if release.status == 'in-progress' %}
+      <div class="progress-track">
+        <div class="progress-fill"></div>
+      </div>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

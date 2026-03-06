@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel quick-config">
+  <div>
+    <h2 class="section-title">
+      <i data-lucide="settings"></i>
+      Health Check Configuration
+    </h2>
+    <p class="subtle">Configured endpoint checks drive real uptime verification for your server monitoring.</p>
+    <div class="inline-stats">
+      <span><b>{{ health_config_stats.configured }}</b> configured</span>
+      <span><b>{{ health_config_stats.enabled }}</b> enabled</span>
+      <span><b>{{ health_config_stats.up }}</b> up</span>
+      <span><b>{{ health_config_stats.down }}</b> down</span>
+    </div>
+    <p class="subtle">
+      {% if has_configured_servers %}
+      Live URL checks are active on this dashboard (every {{ health_check_interval_seconds }}s).
+      {% else %}
+      Add and enable checks to populate this dashboard with your real server URL checks.
+      {% endif %}
+    </p>
+  </div>
+  <div class="quick-config-actions">
+    {% if has_configured_servers %}
+    <form method="post" action="/server-health/refresh">
+      <button type="submit" class="btn">
+        <i data-lucide="refresh-cw"></i>
+        Run URL Checks
+      </button>
+    </form>
+    {% endif %}
+    <a href="/config/server-health" class="btn primary">
+      <i data-lucide="settings-2"></i>
+      Configure Server Checks
+    </a>
+  </div>
+</section>
+
+<section class="grid stats-grid cols-4">
+  <article class="panel stat total">
+    <div>
+      <p class="label">Total Servers</p>
+      <p class="value cyan" data-stat="total">{{ stats.total }}</p>
+    </div>
+    <i data-lucide="activity"></i>
+  </article>
+  <article class="panel stat healthy">
+    <div>
+      <p class="label">Healthy</p>
+      <p class="value green" data-stat="healthy">{{ stats.healthy }}</p>
+    </div>
+    <i data-lucide="trending-up"></i>
+  </article>
+  <article class="panel stat warning">
+    <div>
+      <p class="label">Warning</p>
+      <p class="value yellow" data-stat="warning">{{ stats.warning }}</p>
+    </div>
+    <i data-lucide="triangle-alert"></i>
+  </article>
+  <article class="panel stat critical">
+    <div>
+      <p class="label">Critical</p>
+      <p class="value red" data-stat="critical">{{ stats.critical }}</p>
+    </div>
+    <i data-lucide="triangle-alert"></i>
+  </article>
+</section>
+
+<section class="panel">
+  <h2 class="section-title">
+    <i data-lucide="activity"></i>
+    Network Topology - Live Signal Monitor
+  </h2>
+
+  <div id="network-viewport" class="network-viewport">
+    <div id="network-board" class="network-board" data-offset-x="-200" data-offset-y="-200">
+      <div class="grid-overlay"></div>
+      <div id="signal-layer" class="signal-layer"></div>
+
+      <article
+        class="mainframe"
+        data-mainframe
+        data-x="{{ mainframe.x + 250 }}"
+        data-y="{{ mainframe.y + 250 }}"
+        style="left: {{ mainframe.x + 250 }}px; top: {{ mainframe.y + 250 }}px"
+      >
+        <div class="ring ring-outer"></div>
+        <div class="ring ring-inner"></div>
+        <div class="core">
+          <i data-lucide="cpu"></i>
+          <p class="mono title">MAINFRAME</p>
+          <p class="mono subtitle">{{ stats.total }} nodes</p>
+          <span class="core-dot"></span>
+        </div>
+        <div class="throughput mono"><i data-lucide="zap"></i> {{ mainframe.throughput }}</div>
+      </article>
+
+      {% for server in servers %}
+      <article
+        class="server-node {{ server.status }}"
+        data-server
+        data-server-id="{{ server.id }}"
+        data-status="{{ server.status }}"
+        data-ping-active="{{ 1 if server.animate_ping else 0 }}"
+        data-ping-color="{{ server.ping_color }}"
+        data-ping-duration="{{ server.ping_duration_seconds }}"
+        data-ping-delay="{{ server.ping_delay_seconds }}"
+        data-last-checked-at="{{ server.last_ping_at or '' }}"
+        data-x="{{ server.x + 250 }}"
+        data-y="{{ server.y + 250 }}"
+        style="left: {{ server.x + 250 }}px; top: {{ server.y + 250 }}px"
+      >
+        <div class="server-icons">
+          <i data-lucide="server"></i>
+          {% if server.status == 'healthy' %}
+          <i data-lucide="check-circle-2"></i>
+          {% elif server.status == 'warning' %}
+          <i data-lucide="clock-3"></i>
+          {% else %}
+          <i data-lucide="alert-circle"></i>
+          {% endif %}
+        </div>
+        <p class="mono node-name">{{ server.name }}</p>
+        <div class="mono node-meta">
+          <span data-node-response>{% if server.last_check %}{{ server.response_time }}ms{% else %}n/a{% endif %}</span>
+          <span data-node-uptime>{{ server.uptime }}% uptime</span>
+          {% if not server.is_enabled %}
+          <span data-node-http>disabled</span>
+          {% elif server.http_status %}
+          <span data-node-http>HTTP {{ server.http_status }}</span>
+          {% else %}
+          <span data-node-http>HTTP n/a</span>
+          {% endif %}
+          <span class="last-ping" data-node-last-ping>last ping: {{ server.last_ping_display }}</span>
+        </div>
+      </article>
+      {% endfor %}
+
+      {% if not servers %}
+      <div class="network-empty">
+        <p>No configured servers yet. Add targets in Config to display live checks here.</p>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <h2 class="section-title">Server Details</h2>
+  <div class="list-stack">
+    {% for server in servers %}
+    <article class="list-row" data-server-row data-server-id="{{ server.id }}">
+      <div class="row-name">
+        <span class="status-dot {{ server.status }}" data-row-dot></span>
+        <span class="mono">{{ server.name }}</span>
+        {% if not server.is_enabled %}<span class="status-pill warning" data-row-enabled-pill>DISABLED</span>{% else %}<span class="status-pill healthy hidden" data-row-enabled-pill>DISABLED</span>{% endif %}
+      </div>
+      <div class="row-meta">
+        <span><b data-row-response>{% if server.last_check %}{{ server.response_time }}ms{% else %}n/a{% endif %}</b> response</span>
+        <span><b data-row-uptime>{{ server.uptime }}%</b> uptime</span>
+        <span class="mono">{{ server.url }}</span>
+        <span class="status-pill {{ server.status }}" data-row-status-pill>{{ server.status|upper }}</span>
+        <span class="mono" data-row-last-ping>last ping: {{ server.last_ping_display }}</span>
+      </div>
+    </article>
+    {% endfor %}
+    {% if not servers %}
+    <p class="subtle">No servers configured. Go to Config and add your server URL checks.</p>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
