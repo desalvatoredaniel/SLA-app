@@ -698,13 +698,13 @@ def _build_topology_layout(group_sizes: list[tuple[str, int]]) -> tuple[dict[str
         point_x = [x for x, _ in local_points] or [0.0]
         point_y = [y for _, y in local_points] or [0.0]
         pad_x = 96.0
-        pad_top = 96.0
-        pad_bottom = 88.0
+        pad_top = 170.0
+        pad_bottom = 100.0
 
         local_left = min(point_x) - pad_x
         local_top = min(point_y) - pad_top
         local_width = max(300.0, (max(point_x) - min(point_x)) + (pad_x * 2))
-        local_height = max(260.0, (max(point_y) - min(point_y)) + pad_top + pad_bottom)
+        local_height = max(300.0, (max(point_y) - min(point_y)) + pad_top + pad_bottom)
         local_radius = max(local_width, local_height) / 2
         max_local_radius = max(max_local_radius, local_radius)
 
