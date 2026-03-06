@@ -1,5 +1,114 @@
 {% extends "base.html" %}
 {% block content %}
+{% if release_notice %}
+<section class="panel notice-panel">
+  <p>{{ release_notice }}</p>
+</section>
+{% endif %}
+
+<section class="panel quick-config">
+  <div>
+    <h2 class="section-title">
+      <i data-lucide="mail-search"></i>
+      Release Email Ingestion
+    </h2>
+    <p class="subtle">
+      Polls your inbox for deployment emails, opens linked Word docs, and imports deployment file paths.
+    </p>
+    <div class="inline-stats">
+      <span><b>{{ 'ON' if release_tracker.is_enabled else 'OFF' }}</b> tracker</span>
+      <span><b>{{ release_tracker.poll_interval_seconds }}</b>s interval</span>
+      <span><b>{{ release_tracker.imap_mailbox }}</b> mailbox</span>
+      <span><b>{{ release_tracker.last_uid }}</b> last UID</span>
+    </div>
+    {% if release_tracker.last_run_at %}
+    <p class="subtle">Last run (UTC): <span class="mono">{{ release_tracker.last_run_at }}</span></p>
+    {% endif %}
+    {% if release_tracker.last_error %}
+    <p class="subtle error-text">{{ release_tracker.last_error }}</p>
+    {% endif %}
+  </div>
+  <div class="quick-config-actions">
+    <form method="post" action="/releases/sync">
+      <button type="submit" class="btn">
+        <i data-lucide="refresh-cw"></i>
+        Sync Release Emails
+      </button>
+    </form>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="section-row">
+    <h2 class="section-title">
+      <i data-lucide="settings-2"></i>
+      Release Tracker Config
+    </h2>
+  </div>
+
+  <form method="post" action="/config/releases/update" class="config-form">
+    <div class="form-grid cols-2">
+      <label>
+        <span>IMAP Host</span>
+        <input name="imap_host" required placeholder="imap.office365.com" value="{{ release_tracker.imap_host }}" />
+      </label>
+      <label>
+        <span>IMAP Port</span>
+        <input name="imap_port" type="number" min="1" max="65535" value="{{ release_tracker.imap_port }}" />
+      </label>
+      <label>
+        <span>IMAP Username</span>
+        <input name="imap_username" required placeholder="you@company.com" value="{{ release_tracker.imap_username }}" />
+      </label>
+      <label>
+        <span>IMAP Password Env Key</span>
+        <input name="imap_password_env_key" value="{{ release_tracker.imap_password_env_key }}" />
+      </label>
+      <label>
+        <span>IMAP Password {% if release_tracker.has_imap_password %}<small>(leave blank to keep)</small>{% endif %}</span>
+        <input name="imap_password" type="password" placeholder="{% if release_tracker.has_imap_password %}Saved in .env{% else %}••••••••{% endif %}" />
+      </label>
+      <label>
+        <span>Mailbox</span>
+        <input name="imap_mailbox" value="{{ release_tracker.imap_mailbox }}" placeholder="INBOX" />
+      </label>
+      <label>
+        <span>Email Subject Filter</span>
+        <input name="subject_filter" value="{{ release_tracker.subject_filter }}" placeholder="Deployment" />
+      </label>
+      <label>
+        <span>Email Sender Filter</span>
+        <input name="sender_filter" value="{{ release_tracker.sender_filter }}" placeholder="deploy-bot@company.com" />
+      </label>
+      <label>
+        <span>Word Doc Link Regex</span>
+        <input name="doc_link_regex" value="{{ release_tracker.doc_link_regex }}" />
+      </label>
+      <label>
+        <span>Deployment Path Regex</span>
+        <input name="deployment_path_regex" value="{{ release_tracker.deployment_path_regex }}" />
+      </label>
+      <label>
+        <span>Poll Interval (seconds)</span>
+        <input name="poll_interval_seconds" type="number" min="30" max="86400" value="{{ release_tracker.poll_interval_seconds }}" />
+      </label>
+    </div>
+
+    <div class="checkbox-row">
+      <label><input type="checkbox" name="is_enabled" {% if release_tracker.is_enabled %}checked{% endif %} /> Enable tracker</label>
+      <label><input type="checkbox" name="only_unseen" {% if release_tracker.only_unseen %}checked{% endif %} /> Only unread emails</label>
+      <label><input type="checkbox" name="mark_seen" {% if release_tracker.mark_seen %}checked{% endif %} /> Mark emails as seen after processing</label>
+    </div>
+
+    <div class="section-row">
+      <button type="submit" class="btn primary">
+        <i data-lucide="save"></i>
+        Save Release Tracker
+      </button>
+    </div>
+  </form>
+</section>
+
 <section class="grid stats-grid cols-3">
   <article class="panel stat healthy">
     <div>
@@ -57,6 +166,9 @@
         <div><p>Services</p><b class="mono">{{ release.services }} updated</b></div>
         <div><p>Commits</p><b class="mono">{{ release.commits }} changes</b></div>
       </div>
+      {% if release.deployment_file_path %}
+      <p class="release-path mono">Deployment file: {{ release.deployment_file_path }}</p>
+      {% endif %}
 
       {% if release.status == 'in-progress' %}
       <div class="progress-track">

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import html
+import imaplib
 import json
 import math
 import os
@@ -9,17 +10,23 @@ import re
 import smtplib
 import ssl
 import threading
+import zipfile
 from base64 import b64encode
 from copy import deepcopy
 from datetime import date, datetime, timezone
+from email import policy
 from email.message import EmailMessage
+from email.parser import BytesParser
+from email.utils import parseaddr, parsedate_to_datetime
+from io import BytesIO
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Any
 from urllib import error as urllib_error
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 from urllib import request as urllib_request
 from uuid import uuid4
+import xml.etree.ElementTree as ET
 
 from flask import Flask, jsonify, redirect, render_template, request, url_for
 
@@ -29,6 +36,8 @@ ALLOWED_HTTP_METHODS = {"GET", "HEAD"}
 ALLOWED_AUTH_TYPES = {"none", "basic", "bearer"}
 ENV_LINE_PATTERN = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")
 SERVER_HEALTH_CONFIG_PATH = Path(app.instance_path) / "server_health_checks.json"
+RELEASE_TRACKER_CONFIG_PATH = Path(app.instance_path) / "release_tracker_config.json"
+RELEASE_TRACKER_EVENTS_PATH = Path(app.instance_path) / "release_tracker_events.json"
 ENV_PATH = Path(os.getenv("SLA_APP_ENV_PATH", ".env"))
 
 try:
@@ -39,6 +48,9 @@ except ValueError:
 SERVER_HEALTH_LOCK = threading.RLock()
 _health_checker_thread: threading.Thread | None = None
 _health_checker_start_lock = threading.Lock()
+RELEASE_TRACKER_LOCK = threading.RLock()
+_release_tracker_thread: threading.Thread | None = None
+_release_tracker_start_lock = threading.Lock()
 
 
 def _env_bool(key: str, default: bool) -> bool:
@@ -64,6 +76,30 @@ SMTP_FROM = os.getenv("SLA_ALERT_FROM", "").strip()
 SMTP_USE_TLS = _env_bool("SLA_ALERT_SMTP_USE_TLS", True)
 SMTP_USE_SSL = _env_bool("SLA_ALERT_SMTP_USE_SSL", False)
 EMAIL_SUBJECT_PREFIX = os.getenv("SLA_ALERT_SUBJECT_PREFIX", "[SLA Server Health]").strip() or "[SLA Server Health]"
+
+RELEASE_TRACKER_DEFAULTS: dict[str, Any] = {
+    "is_enabled": False,
+    "imap_host": os.getenv("SLA_RELEASE_IMAP_HOST", "").strip(),
+    "imap_port": 993,
+    "imap_username": os.getenv("SLA_RELEASE_IMAP_USERNAME", "").strip(),
+    "imap_password_env_key": os.getenv("SLA_RELEASE_IMAP_PASSWORD_ENV_KEY", "SLA_RELEASE_IMAP_PASSWORD").strip()
+    or "SLA_RELEASE_IMAP_PASSWORD",
+    "imap_mailbox": os.getenv("SLA_RELEASE_IMAP_MAILBOX", "INBOX").strip() or "INBOX",
+    "subject_filter": os.getenv("SLA_RELEASE_SUBJECT_FILTER", "").strip(),
+    "sender_filter": os.getenv("SLA_RELEASE_SENDER_FILTER", "").strip(),
+    "doc_link_regex": os.getenv("SLA_RELEASE_DOC_LINK_REGEX", r"https?://[^\s\"'<>]+").strip() or r"https?://[^\s\"'<>]+",
+    "deployment_path_regex": os.getenv(
+        "SLA_RELEASE_DEPLOYMENT_PATH_REGEX",
+        r"(?i)(?:[A-Za-z]:\\[^\s\"'<>\|]+|/[^\s\"'<>]+)\.(?:zip|jar|war|tar|tar\.gz|tgz|yaml|yml|json|xml|txt|sh|ps1)",
+    ).strip()
+    or r"(?i)(?:[A-Za-z]:\\[^\s\"'<>\|]+|/[^\s\"'<>]+)\.(?:zip|jar|war|tar|tar\.gz|tgz|yaml|yml|json|xml|txt|sh|ps1)",
+    "only_unseen": True,
+    "mark_seen": False,
+    "poll_interval_seconds": 180,
+    "last_uid": 0,
+    "last_run_at": "",
+    "last_error": "",
+}
 
 SERVER_GROUP_OPTIONS = (
     "LEAP BO PROD",
@@ -516,6 +552,420 @@ def _save_server_health_checks() -> None:
     with SERVER_HEALTH_LOCK:
         payload = json.dumps(server_health_checks, indent=2)
     SERVER_HEALTH_CONFIG_PATH.write_text(payload, encoding="utf-8")
+
+
+def _normalize_release_tracker_config(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "is_enabled": bool(raw.get("is_enabled", RELEASE_TRACKER_DEFAULTS["is_enabled"])),
+        "imap_host": str(raw.get("imap_host") or RELEASE_TRACKER_DEFAULTS["imap_host"]).strip(),
+        "imap_port": _coerce_int(raw.get("imap_port"), int(RELEASE_TRACKER_DEFAULTS["imap_port"]), 1, 65535),
+        "imap_username": str(raw.get("imap_username") or RELEASE_TRACKER_DEFAULTS["imap_username"]).strip(),
+        "imap_password_env_key": str(
+            raw.get("imap_password_env_key") or RELEASE_TRACKER_DEFAULTS["imap_password_env_key"]
+        ).strip()
+        or str(RELEASE_TRACKER_DEFAULTS["imap_password_env_key"]),
+        "imap_mailbox": str(raw.get("imap_mailbox") or RELEASE_TRACKER_DEFAULTS["imap_mailbox"]).strip() or "INBOX",
+        "subject_filter": str(raw.get("subject_filter") or RELEASE_TRACKER_DEFAULTS["subject_filter"]).strip(),
+        "sender_filter": str(raw.get("sender_filter") or RELEASE_TRACKER_DEFAULTS["sender_filter"]).strip(),
+        "doc_link_regex": str(raw.get("doc_link_regex") or RELEASE_TRACKER_DEFAULTS["doc_link_regex"]).strip()
+        or str(RELEASE_TRACKER_DEFAULTS["doc_link_regex"]),
+        "deployment_path_regex": str(
+            raw.get("deployment_path_regex") or RELEASE_TRACKER_DEFAULTS["deployment_path_regex"]
+        ).strip()
+        or str(RELEASE_TRACKER_DEFAULTS["deployment_path_regex"]),
+        "only_unseen": bool(raw.get("only_unseen", RELEASE_TRACKER_DEFAULTS["only_unseen"])),
+        "mark_seen": bool(raw.get("mark_seen", RELEASE_TRACKER_DEFAULTS["mark_seen"])),
+        "poll_interval_seconds": _coerce_int(
+            raw.get("poll_interval_seconds"),
+            int(RELEASE_TRACKER_DEFAULTS["poll_interval_seconds"]),
+            30,
+            86_400,
+        ),
+        "last_uid": _coerce_int(raw.get("last_uid"), 0, 0, 2_147_483_647),
+        "last_run_at": str(raw.get("last_run_at") or "").strip(),
+        "last_error": str(raw.get("last_error") or "").strip(),
+    }
+
+
+def _load_release_tracker_config() -> dict[str, Any]:
+    _ensure_instance_dir()
+    if not RELEASE_TRACKER_CONFIG_PATH.exists():
+        return _normalize_release_tracker_config(RELEASE_TRACKER_DEFAULTS)
+
+    try:
+        payload = json.loads(RELEASE_TRACKER_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return _normalize_release_tracker_config(RELEASE_TRACKER_DEFAULTS)
+
+    if not isinstance(payload, dict):
+        return _normalize_release_tracker_config(RELEASE_TRACKER_DEFAULTS)
+
+    return _normalize_release_tracker_config(payload)
+
+
+def _save_release_tracker_config() -> None:
+    _ensure_instance_dir()
+    with RELEASE_TRACKER_LOCK:
+        payload = json.dumps(release_tracker_config, indent=2)
+    RELEASE_TRACKER_CONFIG_PATH.write_text(payload, encoding="utf-8")
+
+
+def _normalize_release_tracker_event(raw: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    path = str(raw.get("deployment_file_path") or "").strip()
+    if not path:
+        return None
+
+    return {
+        "id": str(raw.get("id") or uuid4().hex),
+        "version": str(raw.get("version") or "n/a").strip() or "n/a",
+        "name": str(raw.get("name") or "Imported Deployment").strip() or "Imported Deployment",
+        "status": str(raw.get("status") or "deployed").strip() or "deployed",
+        "environment": str(raw.get("environment") or "production").strip() or "production",
+        "deployed_by": str(raw.get("deployed_by") or "Email Ingest").strip() or "Email Ingest",
+        "deployed_at": str(raw.get("deployed_at") or datetime.now().strftime("%Y-%m-%d %H:%M")).strip(),
+        "services": _coerce_int(raw.get("services"), 1, 0, 10_000),
+        "commits": _coerce_int(raw.get("commits"), 0, 0, 100_000),
+        "deployment_file_path": path,
+        "source_uid": str(raw.get("source_uid") or "").strip(),
+        "source_subject": str(raw.get("source_subject") or "").strip(),
+        "source_doc_ref": str(raw.get("source_doc_ref") or "").strip(),
+        "imported_at": str(raw.get("imported_at") or datetime.now(timezone.utc).isoformat()).strip(),
+    }
+
+
+def _load_release_tracker_events() -> list[dict[str, Any]]:
+    _ensure_instance_dir()
+    if not RELEASE_TRACKER_EVENTS_PATH.exists():
+        return []
+    try:
+        payload = json.loads(RELEASE_TRACKER_EVENTS_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    if not isinstance(payload, list):
+        return []
+
+    events: list[dict[str, Any]] = []
+    for item in payload:
+        normalized = _normalize_release_tracker_event(item)
+        if normalized is not None:
+            events.append(normalized)
+    return events
+
+
+def _save_release_tracker_events() -> None:
+    _ensure_instance_dir()
+    with RELEASE_TRACKER_LOCK:
+        payload = json.dumps(release_tracker_events, indent=2)
+    RELEASE_TRACKER_EVENTS_PATH.write_text(payload, encoding="utf-8")
+
+
+def _extract_links_from_text(text: str) -> list[str]:
+    if not text:
+        return []
+    return [match.group(0).strip() for match in re.finditer(r"https?://[^\s\"'<>]+", text)]
+
+
+def _extract_message_text(message: EmailMessage) -> str:
+    segments: list[str] = []
+    preferred = message.get_body(preferencelist=("plain", "html"))
+    if preferred:
+        try:
+            content = preferred.get_content()
+        except Exception:  # noqa: BLE001
+            content = ""
+        if isinstance(content, str) and content.strip():
+            segments.append(content)
+
+    if not segments:
+        for part in message.walk():
+            if part.get_content_disposition() == "attachment":
+                continue
+            content_type = part.get_content_type()
+            if content_type not in {"text/plain", "text/html"}:
+                continue
+            try:
+                content = part.get_content()
+            except Exception:  # noqa: BLE001
+                content = ""
+            if isinstance(content, str) and content.strip():
+                segments.append(content)
+    return "\n".join(segments)
+
+
+def _extract_doc_refs_from_message(message: EmailMessage, link_pattern: str) -> tuple[list[str], list[bytes]]:
+    message_text = _extract_message_text(message)
+    links = _extract_links_from_text(message_text)
+    doc_refs: list[str] = []
+    doc_attachments: list[bytes] = []
+
+    for link in links:
+        if re.search(link_pattern, link):
+            doc_refs.append(link)
+        elif ".docx" in link.lower():
+            doc_refs.append(link)
+
+    for part in message.walk():
+        if part.get_content_disposition() != "attachment":
+            continue
+        filename = str(part.get_filename() or "").lower()
+        content_type = part.get_content_type().lower()
+        if filename.endswith(".docx") or "wordprocessingml.document" in content_type:
+            payload = part.get_payload(decode=True)
+            if isinstance(payload, (bytes, bytearray)) and payload:
+                doc_attachments.append(bytes(payload))
+
+    return doc_refs, doc_attachments
+
+
+def _load_docx_bytes_from_ref(reference: str) -> bytes:
+    parsed = urlparse(reference)
+    if parsed.scheme in {"http", "https"}:
+        with urllib_request.urlopen(reference, timeout=30) as response:
+            return response.read()
+
+    if parsed.scheme == "file":
+        local_path = Path(unquote(parsed.path))
+        return local_path.read_bytes()
+
+    local_path = Path(reference).expanduser()
+    if local_path.exists():
+        return local_path.read_bytes()
+
+    raise FileNotFoundError(f"Unsupported or missing doc reference: {reference}")
+
+
+def _extract_text_from_docx_bytes(payload: bytes) -> str:
+    segments: list[str] = []
+    with zipfile.ZipFile(BytesIO(payload)) as archive:
+        xml_files = [name for name in archive.namelist() if name.startswith("word/") and name.endswith(".xml")]
+        for name in xml_files:
+            try:
+                xml_payload = archive.read(name)
+            except KeyError:
+                continue
+            try:
+                root = ET.fromstring(xml_payload)
+            except ET.ParseError:
+                continue
+            for node in root.iter():
+                if node.tag.endswith("}t") and node.text:
+                    segments.append(node.text)
+    return "\n".join(segments)
+
+
+def _extract_deployment_paths_from_text(text: str, path_pattern: str) -> list[str]:
+    if not text:
+        return []
+    try:
+        pattern = re.compile(path_pattern)
+    except re.error:
+        pattern = re.compile(str(RELEASE_TRACKER_DEFAULTS["deployment_path_regex"]))
+
+    paths: list[str] = []
+    for match in pattern.finditer(text):
+        candidate = match.group(0).strip().rstrip(".,;)")
+        if candidate and candidate not in paths:
+            paths.append(candidate)
+    return paths
+
+
+def _infer_release_environment(deployment_path: str) -> str:
+    lowered = deployment_path.lower()
+    if "stage" in lowered:
+        return "staging"
+    if "qa" in lowered:
+        return "development"
+    if "prod" in lowered:
+        return "production"
+    return "production"
+
+
+def _release_sort_key(item: dict[str, Any]) -> datetime:
+    imported_at = str(item.get("imported_at") or "").strip()
+    if imported_at:
+        parsed = _parse_checked_at(imported_at)
+        if parsed is not None:
+            return parsed
+
+    deployed_at = str(item.get("deployed_at") or "").strip()
+    try:
+        return datetime.strptime(deployed_at, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _build_release_view() -> list[dict[str, Any]]:
+    with RELEASE_TRACKER_LOCK:
+        imported = [deepcopy(item) for item in release_tracker_events]
+    combined = imported + [deepcopy(item) for item in RELEASES]
+    combined.sort(key=_release_sort_key, reverse=True)
+    return combined
+
+
+def _sync_release_tracker_once(*, force: bool = False) -> dict[str, Any]:
+    with RELEASE_TRACKER_LOCK:
+        config = deepcopy(release_tracker_config)
+        existing_events = [deepcopy(item) for item in release_tracker_events]
+
+    if not config.get("is_enabled") and not force:
+        return {"ok": True, "imported": 0, "processed": 0, "message": "Release tracker disabled"}
+
+    imap_host = str(config.get("imap_host") or "").strip()
+    imap_username = str(config.get("imap_username") or "").strip()
+    imap_password = _secret_from_env(str(config.get("imap_password_env_key") or ""))
+    if not imap_host or not imap_username or not imap_password:
+        missing = []
+        if not imap_host:
+            missing.append("imap_host")
+        if not imap_username:
+            missing.append("imap_username")
+        if not imap_password:
+            missing.append("imap_password_env_key")
+        message = f"Release tracker config incomplete: {', '.join(missing)}"
+        with RELEASE_TRACKER_LOCK:
+            release_tracker_config["last_error"] = message
+            release_tracker_config["last_run_at"] = datetime.now(timezone.utc).isoformat()
+        _save_release_tracker_config()
+        return {"ok": False, "imported": 0, "processed": 0, "message": message}
+
+    mailbox = str(config.get("imap_mailbox") or "INBOX")
+    subject_filter = str(config.get("subject_filter") or "").strip()
+    sender_filter = str(config.get("sender_filter") or "").strip()
+    doc_link_regex = str(config.get("doc_link_regex") or RELEASE_TRACKER_DEFAULTS["doc_link_regex"])
+    deployment_path_regex = str(config.get("deployment_path_regex") or RELEASE_TRACKER_DEFAULTS["deployment_path_regex"])
+    only_unseen = bool(config.get("only_unseen"))
+    mark_seen = bool(config.get("mark_seen"))
+    last_uid = _coerce_int(config.get("last_uid"), 0, 0, 2_147_483_647)
+
+    dedupe_keys = {(str(item.get("source_uid") or ""), str(item.get("deployment_file_path") or "")) for item in existing_events}
+
+    imported_count = 0
+    processed_count = 0
+    highest_uid = last_uid
+    new_events: list[dict[str, Any]] = []
+    parse_errors: list[str] = []
+
+    try:
+        with imaplib.IMAP4_SSL(imap_host, int(config.get("imap_port") or 993)) as imap:
+            imap.login(imap_username, imap_password)
+            status, _ = imap.select(mailbox, readonly=not mark_seen)
+            if status != "OK":
+                raise RuntimeError(f"Unable to select mailbox {mailbox}")
+
+            criteria: list[str] = ["UNSEEN"] if only_unseen else ["ALL"]
+            if subject_filter:
+                criteria += ["SUBJECT", subject_filter]
+            if sender_filter:
+                criteria += ["FROM", sender_filter]
+
+            status, raw_ids = imap.uid("search", None, *criteria)
+            if status != "OK":
+                raise RuntimeError("IMAP search failed")
+
+            uid_values = [int(part) for part in (raw_ids[0].split() if raw_ids and raw_ids[0] else []) if part.isdigit()]
+            uid_values.sort()
+            for uid in uid_values:
+                if uid <= last_uid:
+                    continue
+
+                status, data = imap.uid("fetch", str(uid), "(RFC822)")
+                if status != "OK" or not data:
+                    continue
+                raw_message = None
+                for part in data:
+                    if isinstance(part, tuple) and len(part) >= 2:
+                        raw_message = part[1]
+                        break
+                if not raw_message:
+                    continue
+
+                processed_count += 1
+                highest_uid = max(highest_uid, uid)
+                message = BytesParser(policy=policy.default).parsebytes(raw_message)
+                sender_name, sender_email = parseaddr(str(message.get("from") or ""))
+                deployed_by = sender_name.strip() or sender_email.strip() or "Email Ingest"
+                subject = str(message.get("subject") or "Deployment")
+                date_header = str(message.get("date") or "")
+                try:
+                    deployed_at_dt = parsedate_to_datetime(date_header).astimezone(timezone.utc)
+                except Exception:  # noqa: BLE001
+                    deployed_at_dt = datetime.now(timezone.utc)
+                deployed_at_label = deployed_at_dt.strftime("%Y-%m-%d %H:%M")
+
+                doc_refs, doc_attachments = _extract_doc_refs_from_message(message, doc_link_regex)
+                doc_payloads: list[tuple[str, bytes]] = []
+                for ref in doc_refs:
+                    try:
+                        doc_payloads.append((ref, _load_docx_bytes_from_ref(ref)))
+                    except Exception as exc:  # noqa: BLE001
+                        parse_errors.append(f"UID {uid}: unable to load doc link {ref} ({exc})")
+                for index, payload in enumerate(doc_attachments, start=1):
+                    doc_payloads.append((f"attachment-{index}.docx", payload))
+
+                for source_ref, payload in doc_payloads:
+                    doc_text = _extract_text_from_docx_bytes(payload)
+                    deployment_paths = _extract_deployment_paths_from_text(doc_text, deployment_path_regex)
+                    for deployment_path in deployment_paths:
+                        dedupe = (str(uid), deployment_path)
+                        if dedupe in dedupe_keys:
+                            continue
+
+                        version_match = re.search(r"v\d+\.\d+\.\d+(?:[-+._A-Za-z0-9]*)?", subject, flags=re.IGNORECASE)
+                        version = version_match.group(0) if version_match else "n/a"
+                        event = {
+                            "id": uuid4().hex,
+                            "version": version,
+                            "name": subject[:160] or "Imported Deployment",
+                            "status": "deployed",
+                            "environment": _infer_release_environment(deployment_path),
+                            "deployed_by": deployed_by[:80],
+                            "deployed_at": deployed_at_label,
+                            "services": 1,
+                            "commits": 0,
+                            "deployment_file_path": deployment_path,
+                            "source_uid": str(uid),
+                            "source_subject": subject,
+                            "source_doc_ref": source_ref,
+                            "imported_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                        normalized_event = _normalize_release_tracker_event(event)
+                        if normalized_event is None:
+                            continue
+                        new_events.append(normalized_event)
+                        dedupe_keys.add(dedupe)
+                        imported_count += 1
+
+                if mark_seen:
+                    imap.uid("store", str(uid), "+FLAGS", "(\\Seen)")
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc)
+        with RELEASE_TRACKER_LOCK:
+            release_tracker_config["last_error"] = message
+            release_tracker_config["last_run_at"] = datetime.now(timezone.utc).isoformat()
+        _save_release_tracker_config()
+        return {"ok": False, "imported": imported_count, "processed": processed_count, "message": message}
+
+    with RELEASE_TRACKER_LOCK:
+        release_tracker_config["last_uid"] = highest_uid
+        release_tracker_config["last_run_at"] = datetime.now(timezone.utc).isoformat()
+        release_tracker_config["last_error"] = "; ".join(parse_errors[-4:]) if parse_errors else ""
+        if new_events:
+            release_tracker_events.extend(new_events)
+            release_tracker_events.sort(key=_release_sort_key, reverse=True)
+            del release_tracker_events[200:]
+
+    _save_release_tracker_config()
+    if new_events:
+        _save_release_tracker_events()
+
+    return {
+        "ok": True,
+        "imported": imported_count,
+        "processed": processed_count,
+        "message": "Sync complete",
+    }
 
 
 def _find_server_health_check(check_id: str) -> tuple[int, dict[str, Any] | None]:
@@ -1205,6 +1655,8 @@ def _build_server_health_check_from_form(
 
 
 server_health_checks: list[dict[str, Any]] = _load_server_health_checks()
+release_tracker_config: dict[str, Any] = _load_release_tracker_config()
+release_tracker_events: list[dict[str, Any]] = _load_release_tracker_events()
 
 
 def _background_health_check_loop() -> None:
@@ -1238,9 +1690,48 @@ def _start_background_health_checker() -> None:
         _health_checker_thread.start()
 
 
+def _background_release_tracker_loop() -> None:
+    while True:
+        interval_seconds = int(RELEASE_TRACKER_DEFAULTS["poll_interval_seconds"])
+        try:
+            _sync_release_tracker_once(force=False)
+            with RELEASE_TRACKER_LOCK:
+                interval_seconds = _coerce_int(
+                    release_tracker_config.get("poll_interval_seconds"),
+                    int(RELEASE_TRACKER_DEFAULTS["poll_interval_seconds"]),
+                    30,
+                    86_400,
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        sleep(interval_seconds)
+
+
+def _start_background_release_tracker() -> None:
+    global _release_tracker_thread
+
+    if app.config.get("TESTING"):
+        return
+
+    if app.debug and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+        return
+
+    with _release_tracker_start_lock:
+        if _release_tracker_thread is not None and _release_tracker_thread.is_alive():
+            return
+
+        _release_tracker_thread = threading.Thread(
+            target=_background_release_tracker_loop,
+            name="release-tracker-poller",
+            daemon=True,
+        )
+        _release_tracker_thread.start()
+
+
 @app.before_request
 def ensure_background_checker_started() -> None:
     _start_background_health_checker()
+    _start_background_release_tracker()
 
 
 @app.context_processor
@@ -1319,17 +1810,113 @@ def refresh_server_health() -> Any:
 
 @app.get("/releases")
 def releases() -> str:
+    _start_background_release_tracker()
+    release_items = _build_release_view()
+    with RELEASE_TRACKER_LOCK:
+        tracker_snapshot = dict(release_tracker_config)
+
+    tracker_for_view = {
+        **tracker_snapshot,
+        "has_imap_password": _has_secret(str(tracker_snapshot.get("imap_password_env_key") or "")),
+    }
+
+    notice_code = request.args.get("notice")
+    imported_count = _coerce_int(request.args.get("imported"), 0, 0, 1_000_000)
+    processed_count = _coerce_int(request.args.get("processed"), 0, 0, 1_000_000)
+    release_notice = ""
+    if notice_code == "release-synced":
+        release_notice = f"Release email sync complete. Processed {processed_count} email(s), imported {imported_count} release item(s)."
+    elif notice_code == "release-sync-error":
+        release_notice = "Release email sync failed. Check tracker error details below."
+    elif notice_code == "release-config-saved":
+        release_notice = "Release tracker configuration saved."
+    elif notice_code == "release-config-invalid":
+        release_notice = "Release tracker configuration is invalid. Please check required fields and regex patterns."
+
     return render_template(
         "releases.html",
         page_title="Releases",
         active_page="releases",
-        releases=RELEASES,
+        releases=release_items,
+        release_notice=release_notice,
+        release_tracker=tracker_for_view,
         stats={
-            "deployed": sum(item["status"] == "deployed" for item in RELEASES),
-            "in_progress": sum(item["status"] == "in-progress" for item in RELEASES),
-            "scheduled": sum(item["status"] == "scheduled" for item in RELEASES),
+            "deployed": sum(item["status"] == "deployed" for item in release_items),
+            "in_progress": sum(item["status"] == "in-progress" for item in release_items),
+            "scheduled": sum(item["status"] == "scheduled" for item in release_items),
         },
     )
+
+
+@app.post("/config/releases/update")
+def update_release_tracker_config() -> Any:
+    with RELEASE_TRACKER_LOCK:
+        existing = dict(release_tracker_config)
+
+    updated = dict(existing)
+    updated["is_enabled"] = request.form.get("is_enabled") == "on"
+    updated["imap_host"] = str(request.form.get("imap_host", "")).strip()
+    updated["imap_port"] = _coerce_int(request.form.get("imap_port"), 993, 1, 65535)
+    updated["imap_username"] = str(request.form.get("imap_username", "")).strip()
+    updated["imap_mailbox"] = str(request.form.get("imap_mailbox", "INBOX")).strip() or "INBOX"
+    updated["subject_filter"] = str(request.form.get("subject_filter", "")).strip()
+    updated["sender_filter"] = str(request.form.get("sender_filter", "")).strip()
+    updated["doc_link_regex"] = (
+        str(request.form.get("doc_link_regex", str(RELEASE_TRACKER_DEFAULTS["doc_link_regex"]))).strip()
+        or str(RELEASE_TRACKER_DEFAULTS["doc_link_regex"])
+    )
+    updated["deployment_path_regex"] = (
+        str(
+            request.form.get(
+                "deployment_path_regex",
+                str(RELEASE_TRACKER_DEFAULTS["deployment_path_regex"]),
+            )
+        ).strip()
+        or str(RELEASE_TRACKER_DEFAULTS["deployment_path_regex"])
+    )
+    updated["only_unseen"] = request.form.get("only_unseen") == "on"
+    updated["mark_seen"] = request.form.get("mark_seen") == "on"
+    updated["poll_interval_seconds"] = _coerce_int(request.form.get("poll_interval_seconds"), 180, 30, 86_400)
+    updated["imap_password_env_key"] = (
+        str(request.form.get("imap_password_env_key", "")).strip()
+        or str(existing.get("imap_password_env_key") or RELEASE_TRACKER_DEFAULTS["imap_password_env_key"])
+    )
+
+    posted_password = str(request.form.get("imap_password", ""))
+    if posted_password:
+        _upsert_env_value(updated["imap_password_env_key"], posted_password)
+
+    try:
+        re.compile(updated["doc_link_regex"])
+        re.compile(updated["deployment_path_regex"])
+    except re.error:
+        return redirect(url_for("releases", notice="release-config-invalid"))
+
+    if updated["is_enabled"]:
+        if not updated["imap_host"] or not updated["imap_username"] or not _has_secret(updated["imap_password_env_key"]):
+            return redirect(url_for("releases", notice="release-config-invalid"))
+
+    normalized = _normalize_release_tracker_config(updated)
+    with RELEASE_TRACKER_LOCK:
+        release_tracker_config.update(normalized)
+    _save_release_tracker_config()
+
+    return redirect(url_for("releases", notice="release-config-saved"))
+
+
+@app.post("/releases/sync")
+def sync_releases_now() -> Any:
+    result = _sync_release_tracker_once(force=True)
+    if result.get("ok"):
+        return redirect(
+            url_for(
+                "releases",
+                notice="release-synced",
+                imported=_coerce_int(result.get("imported"), 0, 0, 1_000_000),
+                processed=_coerce_int(result.get("processed"), 0, 0, 1_000_000),
+            )
+        )
+    return redirect(url_for("releases", notice="release-sync-error"))
 
 
 @app.get("/sla-payments")
