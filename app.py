@@ -1861,7 +1861,7 @@ def releases() -> str:
     release_items = _build_release_view()
     with RELEASE_TRACKER_LOCK:
         tracker_snapshot = dict(release_tracker_config)
-        targets_snapshot = [dict(item) for item in release_tracker_targets]
+        targets_snapshot = [dict(item) for item in release_tracker_targets if bool(item.get("is_enabled", True))]
 
     notice_code = request.args.get("notice")
     releases_count = _coerce_int(request.args.get("releases"), 0, 0, 1_000_000)
