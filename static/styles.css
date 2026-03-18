@@ -980,13 +980,21 @@ body {
 }
 
 .release-board-release {
-  display: flex;
-  align-items: center;
+  display: grid;
+  align-content: start;
+  gap: 0.7rem;
 }
 
 .release-board-release h3 {
   margin: 0;
   font-size: 1rem;
+}
+
+.release-board-release-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
 }
 
 .release-stage {
@@ -1039,7 +1047,20 @@ body {
 .release-stage-card {
   display: grid;
   gap: 0.5rem;
+  padding: 0.7rem;
+  border-radius: 0.7rem;
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  background: rgba(2, 6, 23, 0.36);
   cursor: grab;
+}
+
+.release-unassigned-stack {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.release-stage-card-unassigned {
+  border-style: dashed;
 }
 
 .release-stage-card.is-dragging {

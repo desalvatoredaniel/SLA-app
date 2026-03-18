@@ -598,8 +598,8 @@
       cards.forEach((card) => {
         card.addEventListener('dragstart', (event) => {
           const targetId = String(card.dataset.targetId || '').trim();
-          const currentStep = String(card.dataset.currentStep || '').trim().toUpperCase();
-          if (!targetId || !currentStep) {
+          const currentStep = String(card.dataset.currentStep || 'UNASSIGNED').trim().toUpperCase() || 'UNASSIGNED';
+          if (!targetId) {
             event.preventDefault();
             return;
           }

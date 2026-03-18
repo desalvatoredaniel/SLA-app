@@ -997,7 +997,7 @@ def _build_release_board(release_items: list[dict[str, Any]], release_targets: l
                 "display_name": fallback_name or release_key or "Unknown Release",
                 "steps": {"QA": None, "STAGE": None, "PROD": None},
                 "latest_activity": datetime.min.replace(tzinfo=timezone.utc),
-                "unassigned_count": 0,
+                "unassigned": [],
             }
             rows[canonical_key] = row
         return row
@@ -1032,7 +1032,7 @@ def _build_release_board(release_items: list[dict[str, Any]], release_targets: l
             if modified_dt >= existing_dt:
                 row["steps"][step] = slot
         else:
-            row["unassigned_count"] = int(row.get("unassigned_count") or 0) + 1
+            row["unassigned"].append(slot)
 
     if not rows:
         for release in release_items:
@@ -1058,11 +1058,15 @@ def _build_release_board(release_items: list[dict[str, Any]], release_targets: l
             if step in {"QA", "STAGE", "PROD"}:
                 row["steps"][step] = slot
             else:
-                row["unassigned_count"] = int(row.get("unassigned_count") or 0) + 1
+                row["unassigned"].append(slot)
 
     board_rows = list(rows.values())
     board_rows.sort(key=lambda item: item.get("latest_activity") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     for row in board_rows:
+        row["unassigned"].sort(
+            key=lambda item: _parse_checked_at(str(item.get("last_modified_at") or "")) or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
         row.pop("latest_activity", None)
     return board_rows
 

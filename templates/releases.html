@@ -186,15 +186,43 @@
     {% for release in release_board %}
     <article class="release-board-row" data-release-row>
       <div class="release-board-release">
-        <div class="release-title-wrap">
-          <h3>{{ release.display_name }}</h3>
-          {% if release.release_key and release.release_key != release.display_name %}
-          <span class="token">{{ release.release_key }}</span>
-          {% endif %}
-          {% if release.unassigned_count %}
-          <span class="status-pill warning">{{ release.unassigned_count }} UNASSIGNED</span>
-          {% endif %}
+        <div class="release-board-release-head">
+          <div class="release-title-wrap">
+            <h3>{{ release.display_name }}</h3>
+            {% if release.release_key and release.release_key != release.display_name %}
+            <span class="token">{{ release.release_key }}</span>
+            {% endif %}
+            {% if release.unassigned %}
+            <span class="status-pill warning">{{ release.unassigned|length }} UNASSIGNED</span>
+            {% endif %}
+          </div>
         </div>
+
+        {% if release.unassigned %}
+        <div class="release-unassigned-stack">
+          {% for slot in release.unassigned %}
+          <div
+            class="release-stage-card release-stage-card-unassigned"
+            {% if slot.target_id %}draggable="true"{% endif %}
+            data-release-card
+            data-target-id="{{ slot.target_id }}"
+            data-current-step="UNASSIGNED"
+          >
+            <div class="release-stage-head">
+              <span class="release-stage-label">UNASSIGNED</span>
+              <span class="status-pill warning">READY</span>
+            </div>
+            <p class="release-stage-title">{{ slot.title }}</p>
+            {% if slot.path %}
+            <p class="release-stage-path mono">{{ slot.path }}</p>
+            {% endif %}
+            {% if slot.last_modified_at %}
+            <p class="release-stage-meta">Updated {{ slot.last_modified_at }}</p>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
       </div>
 
       {% for step in ['QA', 'STAGE', 'PROD'] %}
