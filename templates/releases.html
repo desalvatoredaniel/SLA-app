@@ -89,11 +89,17 @@
   <div class="list-stack">
     {% if release_targets %}
       {% for target in release_targets %}
-      <article class="list-row">
+      <article class="list-row {% if not target.is_enabled %}is-muted{% endif %}">
         <div>
           <div class="row-name">
-            <span class="status-dot {{ 'healthy' if target.exists else 'warning' }}"></span>
-            <strong>{{ target.label or target.file_path }}</strong>
+            <span class="status-dot {{ 'healthy' if target.exists and target.is_enabled else 'warning' }}"></span>
+            <strong>{{ target.label or target.folder_name or target.file_path }}</strong>
+            {% if target.label %}
+            <span class="token">Folder: {{ target.folder_name }}</span>
+            {% endif %}
+            {% if not target.is_enabled %}
+            <span class="status-pill warning">IGNORED</span>
+            {% endif %}
           </div>
           <p class="subtle mono">{{ target.file_path }}</p>
           <div class="inline-stats">
@@ -101,6 +107,26 @@
             {% if target.deployment_step_override %}<span><b>{{ target.deployment_step_override }}</b> step</span>{% endif %}
             <span><b>{{ 'FOUND' if target.exists else 'MISSING' }}</b></span>
             {% if target.last_modified_at %}<span><b>{{ target.last_modified_at }}</b> modified</span>{% endif %}
+          </div>
+          <div class="button-row">
+            <form method="post" action="/config/releases/targets/{{ target.id }}/rename" class="rename-form">
+              <input
+                name="label"
+                value="{{ target.label or '' }}"
+                placeholder="Release name override"
+                aria-label="Release name override"
+              />
+              <button type="submit" class="btn primary">
+                <i data-lucide="pencil"></i>
+                Save Name
+              </button>
+            </form>
+            <form method="post" action="/config/releases/targets/{{ target.id }}/toggle-ignore">
+              <button type="submit" class="btn {% if target.is_enabled %}danger{% endif %}">
+                <i data-lucide="{% if target.is_enabled %}x{% else %}rotate-ccw{% endif %}"></i>
+                {% if target.is_enabled %}Ignore{% else %}Restore{% endif %}
+              </button>
+            </form>
           </div>
         </div>
       </article>
@@ -154,13 +180,22 @@
               {% if release.status == 'scheduled' %}<i data-lucide="calendar"></i>{% endif %}
               {% if release.status == 'failed' %}<i data-lucide="alert-circle"></i>{% endif %}
             </span>
-            <h3>{{ release.version }}</h3>
+            <h3>{{ release.name if release.source_type == 'release_folder' else release.version }}</h3>
+            {% if release.source_type == 'release_folder' and release.version and release.version != release.name %}
+            <span class="token">{{ release.version }}</span>
+            {% endif %}
             <span class="env-pill {{ release.environment }}">{{ release.environment }}</span>
             {% if release.deployment_step %}
             <span class="token">{{ release.deployment_step }}</span>
             {% endif %}
           </div>
-          <p class="subtle">{{ release.name }}</p>
+          <p class="subtle">
+            {% if release.source_type == 'release_folder' %}
+            {{ release.deployment_file_path }}
+            {% else %}
+            {{ release.name }}
+            {% endif %}
+          </p>
         </div>
         <span class="status-pill {{ release.status }}">{{ release.status|replace('-', ' ')|upper }}</span>
       </div>

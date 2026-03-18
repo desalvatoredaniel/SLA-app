@@ -650,9 +650,14 @@ body {
   background: rgba(15, 23, 42, 0.56);
 }
 
+.list-row.is-muted {
+  opacity: 0.72;
+}
+
 .row-name {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.55rem;
 }
 
@@ -1042,6 +1047,25 @@ body {
 
 .button-row.compact {
   margin-top: 0;
+}
+
+.rename-form {
+  display: flex;
+  flex: 1 1 28rem;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.rename-form input {
+  flex: 1 1 16rem;
+  min-width: 0;
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  border-radius: 0.55rem;
+  background: rgba(15, 23, 42, 0.78);
+  color: var(--text-main);
+  padding: 0.5rem 0.62rem;
+  font-family: inherit;
+  font-size: 0.9rem;
 }
 
 .btn {
