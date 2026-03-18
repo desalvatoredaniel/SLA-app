@@ -10,17 +10,20 @@
   <div>
     <h2 class="section-title">
       <i data-lucide="folder-search-2"></i>
-      Release File Tracker
+      Release Folder Tracker
     </h2>
     <p class="subtle">
-      Scans tracked release file locations and builds the current deployment timeline from the filesystem.
+      Scans one base directory and treats each immediate child folder as a release.
     </p>
     <div class="inline-stats">
       <span><b>{{ 'ON' if release_tracker.is_enabled else 'OFF' }}</b> tracker</span>
       <span><b>{{ release_tracker.poll_interval_seconds }}</b>s interval</span>
-      <span><b>{{ release_targets|length }}</b> tracked paths</span>
+      <span><b>{{ release_targets|length }}</b> discovered folders</span>
       <span><b>{{ releases|length }}</b> tracked releases</span>
     </div>
+    {% if release_tracker.base_path %}
+    <p class="subtle">Base path: <span class="mono">{{ release_tracker.base_path }}</span></p>
+    {% endif %}
     {% if release_tracker.last_run_at %}
     <p class="subtle">Last run (UTC): <span class="mono">{{ release_tracker.last_run_at }}</span></p>
     {% endif %}
@@ -32,7 +35,7 @@
     <form method="post" action="/releases/sync">
       <button type="submit" class="btn">
         <i data-lucide="refresh-cw"></i>
-        Scan Release Files
+        Scan Release Folders
       </button>
     </form>
   </div>
@@ -52,6 +55,10 @@
         <span>Provider</span>
         <input value="Filesystem Paths" disabled />
       </label>
+      <label class="full-width">
+        <span>Base Path</span>
+        <input name="base_path" placeholder="/deployments/releases" value="{{ release_tracker.base_path or '' }}" />
+      </label>
       <label>
         <span>Poll Interval (seconds)</span>
         <input name="poll_interval_seconds" type="number" min="30" max="86400" value="{{ release_tracker.poll_interval_seconds }}" />
@@ -65,7 +72,7 @@
     <div class="section-row">
       <button type="submit" class="btn primary">
         <i data-lucide="save"></i>
-        Save Release Tracker
+        Save Tracker
       </button>
     </div>
   </form>
@@ -74,79 +81,8 @@
 <section class="panel">
   <div class="section-row">
     <h2 class="section-title">
-      <i data-lucide="folder-plus"></i>
-      Add Release File
-    </h2>
-  </div>
-
-  <form method="post" action="/config/releases/targets/add" class="config-form">
-    <div class="form-grid cols-2">
-      <label class="full-width">
-        <span>File Location</span>
-        <input name="file_path" placeholder="C:\\deployments\\R26.2\\QA\\release.zip" required />
-      </label>
-      <label>
-        <span>Display Label <small>(optional)</small></span>
-        <input name="label" placeholder="R26.2 QA Package" />
-      </label>
-      <label>
-        <span>Release Key Override <small>(optional)</small></span>
-        <input name="release_key_override" placeholder="R26.2" />
-      </label>
-      <label>
-        <span>Deployment Step</span>
-        <select name="deployment_step_override" required>
-          <option value="" selected disabled>Select step</option>
-          {% for step in release_step_options %}
-          <option value="{{ step }}">{{ step }}</option>
-          {% endfor %}
-        </select>
-      </label>
-    </div>
-
-    <div class="checkbox-row">
-      <label><input type="checkbox" name="is_enabled" checked /> Enable path</label>
-    </div>
-
-    <div class="section-row">
-      <button type="submit" class="btn primary">
-        <i data-lucide="plus"></i>
-        Add File Path
-      </button>
-    </div>
-  </form>
-</section>
-
-<section class="panel">
-  <div class="section-row">
-    <h2 class="section-title">
-      <i data-lucide="list-plus"></i>
-      Bulk Add File Paths
-    </h2>
-  </div>
-
-  <form method="post" action="/config/releases/targets/bulk-add" class="config-form">
-    <div class="form-grid">
-      <label class="full-width">
-        <span>One per line: <span class="mono">path[, release_key][, step][, label]</span></span>
-        <textarea name="bulk_paths" placeholder="C:\\deployments\\R26.2\\qa\\release.zip, R26.2, QA, R26.2 QA&#10;C:\\deployments\\R26.2\\prod\\release.zip, R26.2, PROD, R26.2 PROD"></textarea>
-      </label>
-    </div>
-
-    <div class="section-row">
-      <button type="submit" class="btn">
-        <i data-lucide="upload"></i>
-        Import File Paths
-      </button>
-    </div>
-  </form>
-</section>
-
-<section class="panel">
-  <div class="section-row">
-    <h2 class="section-title">
-      <i data-lucide="files"></i>
-      Tracked File Paths
+      <i data-lucide="folders"></i>
+      Discovered Release Folders
     </h2>
   </div>
 
@@ -167,18 +103,10 @@
             {% if target.last_modified_at %}<span><b>{{ target.last_modified_at }}</b> modified</span>{% endif %}
           </div>
         </div>
-        <div class="button-row compact">
-          <form method="post" action="/config/releases/targets/{{ target.id }}/delete">
-            <button type="submit" class="btn danger">
-              <i data-lucide="trash-2"></i>
-              Remove
-            </button>
-          </form>
-        </div>
       </article>
       {% endfor %}
     {% else %}
-    <p class="subtle">No tracked file paths yet.</p>
+    <p class="subtle">No release folders discovered yet. Save a base path and run a scan.</p>
     {% endif %}
   </div>
 </section>
@@ -238,11 +166,11 @@
       </div>
 
       <div class="grid release-meta cols-4">
-        {% if release.source_type == 'file_target' %}
+        {% if release.source_type == 'release_folder' %}
         <div><p>Source</p><b class="mono">{{ release.deployed_by }}</b></div>
         <div><p>Last Changed</p><b class="mono">{{ release.deployed_at }}</b></div>
-        <div><p>Tracked Paths</p><b class="mono">{{ release.tracked_paths_count }}</b></div>
-        <div><p>Available Paths</p><b class="mono">{{ release.available_paths_count }}</b></div>
+        <div><p>Release Folder</p><b class="mono">{{ release.version }}</b></div>
+        <div><p>Folder Status</p><b class="mono">{{ 'FOUND' if release.file_exists else 'MISSING' }}</b></div>
         {% else %}
         <div><p>Deployed By</p><b class="mono">{{ release.deployed_by }}</b></div>
         <div><p>Time</p><b class="mono">{{ release.deployed_at }}</b></div>
@@ -251,7 +179,7 @@
         {% endif %}
       </div>
       {% if release.deployment_file_path %}
-      <p class="release-path mono">Tracked path: {{ release.deployment_file_path }}</p>
+      <p class="release-path mono">Release folder path: {{ release.deployment_file_path }}</p>
       {% endif %}
 
       {% if release.status == 'in-progress' %}
