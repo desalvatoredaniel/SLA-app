@@ -11,7 +11,7 @@ import ssl
 import threading
 from base64 import b64encode
 from copy import deepcopy
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from time import perf_counter, sleep
@@ -91,6 +91,7 @@ RELEASE_TRACKER_DEFAULTS: dict[str, Any] = {
     "last_run_at": "",
     "last_error": "",
 }
+RELEASE_FOLDER_MAX_AGE = timedelta(days=365 * 2)
 RELEASE_STEP_OPTIONS = ("", "DEV", "QA", "STAGE", "PROD")
 
 SERVER_GROUP_OPTIONS = (
@@ -831,6 +832,7 @@ def _build_release_events_from_base_path(
     except OSError as exc:
         raise RuntimeError(f"Could not read release base path {base_path}: {exc}") from exc
 
+    eligible_count = 0
     for release_dir in release_dirs:
         path_value = str(release_dir)
         path_key = _release_target_path_key(path_value)
@@ -842,7 +844,12 @@ def _build_release_events_from_base_path(
         except OSError:
             continue
 
-        last_modified_at = datetime.fromtimestamp(stats.st_mtime, tz=timezone.utc).isoformat()
+        modified_at = datetime.fromtimestamp(stats.st_mtime, tz=timezone.utc)
+        if modified_at < now_utc - RELEASE_FOLDER_MAX_AGE:
+            continue
+
+        eligible_count += 1
+        last_modified_at = modified_at.isoformat()
         release_ref_default = _extract_release_reference(directory_name) or directory_name
         release_ref = str(saved_target.get("release_key_override") or "").strip() or release_ref_default
         release_key = _canonical_release_key(release_ref or directory_name)
@@ -927,7 +934,7 @@ def _build_release_events_from_base_path(
             normalized_events.append(normalized)
 
     normalized_events.sort(key=_release_sort_key, reverse=True)
-    return updated_targets, normalized_events, len(release_dirs)
+    return updated_targets, normalized_events, eligible_count
 
 
 def _release_sort_key(item: dict[str, Any]) -> datetime:

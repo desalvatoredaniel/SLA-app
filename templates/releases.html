@@ -13,7 +13,7 @@
       Release Folder Tracker
     </h2>
     <p class="subtle">
-      Scans one base directory and treats each immediate child folder as a release.
+      Scans one base directory and treats each immediate child folder from the last 2 years as a release.
     </p>
     <div class="inline-stats">
       <span><b>{{ 'ON' if release_tracker.is_enabled else 'OFF' }}</b> tracker</span>
@@ -132,7 +132,7 @@
       </article>
       {% endfor %}
     {% else %}
-    <p class="subtle">No active release folders are visible. Save a base path and run a scan.</p>
+    <p class="subtle">No active release folders from the last 2 years are visible. Save a base path and run a scan.</p>
     {% endif %}
   </div>
 </section>
