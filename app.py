@@ -91,7 +91,7 @@ RELEASE_TRACKER_DEFAULTS: dict[str, Any] = {
     "last_run_at": "",
     "last_error": "",
 }
-RELEASE_FOLDER_MAX_AGE = timedelta(days=365 * 2)
+RELEASE_FOLDER_MAX_AGE = timedelta(days=365)
 RELEASE_STEP_OPTIONS = ("", "DEV", "QA", "STAGE", "PROD")
 
 SERVER_GROUP_OPTIONS = (
