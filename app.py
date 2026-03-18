@@ -1017,6 +1017,7 @@ def _build_release_board(release_items: list[dict[str, Any]], release_targets: l
             row["latest_activity"] = modified_dt
 
         slot = {
+            "target_id": str(target.get("id") or "").strip(),
             "title": custom_label or folder_name or release_key,
             "path": file_path,
             "last_modified_at": str(target.get("last_modified_at") or "").strip(),
@@ -1047,6 +1048,7 @@ def _build_release_board(release_items: list[dict[str, Any]], release_targets: l
                 row["latest_activity"] = modified_dt
 
             slot = {
+                "target_id": "",
                 "title": str(release.get("version") or display_name or release_key).strip(),
                 "path": str(release.get("deployment_file_path") or "").strip(),
                 "last_modified_at": str(release.get("deployed_at") or "").strip(),
@@ -2056,6 +2058,28 @@ def rename_release_target(target_id: str) -> Any:
     _save_release_tracker_targets()
     _sync_release_tracker_once(force=True)
     return redirect(url_for("releases", notice="release-target-renamed"))
+
+
+@app.post("/api/releases/targets/<target_id>/step")
+def update_release_target_step(target_id: str) -> Any:
+    payload = request.get_json(silent=True) or {}
+    requested_step = str(payload.get("deployment_step") or "").strip().upper()
+    if requested_step not in {"QA", "STAGE", "PROD"}:
+        return jsonify({"ok": False, "message": "Invalid deployment step"}), 400
+
+    with RELEASE_TRACKER_LOCK:
+        index, target = _find_release_tracker_target(target_id)
+        if target is None:
+            return jsonify({"ok": False, "message": "Release target not found"}), 404
+        updated_target = dict(target)
+        updated_target["deployment_step_override"] = requested_step
+        release_tracker_targets[index] = _normalize_release_tracker_target(updated_target) or updated_target
+
+    _save_release_tracker_targets()
+    result = _sync_release_tracker_once(force=True)
+    if not result.get("ok"):
+        return jsonify({"ok": False, "message": str(result.get("message") or "Could not update deployment step")}), 500
+    return jsonify({"ok": True, "deployment_step": requested_step})
 
 
 @app.post("/config/releases/targets/<target_id>/toggle-ignore")

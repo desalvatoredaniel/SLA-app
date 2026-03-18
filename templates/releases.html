@@ -184,7 +184,7 @@
     </div>
 
     {% for release in release_board %}
-    <article class="release-board-row">
+    <article class="release-board-row" data-release-row>
       <div class="release-board-release">
         <div class="release-title-wrap">
           <h3>{{ release.display_name }}</h3>
@@ -199,7 +199,12 @@
 
       {% for step in ['QA', 'STAGE', 'PROD'] %}
       {% set slot = release.steps[step] %}
-      <div class="release-stage {{ step|lower }} {% if slot %}has-item{% else %}is-empty{% endif %}">
+      <div
+        class="release-stage {{ step|lower }} {% if slot %}has-item{% else %}is-empty{% endif %}"
+        data-release-dropzone
+        data-step="{{ step }}"
+        data-slot-target-id="{{ slot.target_id if slot else '' }}"
+      >
         <div class="release-stage-head">
           <span class="release-stage-label">{{ step }}</span>
           {% if slot %}
@@ -210,15 +215,23 @@
         </div>
 
         {% if slot %}
-        <p class="release-stage-title">{{ slot.title }}</p>
-        {% if slot.path %}
-        <p class="release-stage-path mono">{{ slot.path }}</p>
-        {% endif %}
-        {% if slot.last_modified_at %}
-        <p class="release-stage-meta">Updated {{ slot.last_modified_at }}</p>
-        {% endif %}
+        <div
+          class="release-stage-card"
+          {% if slot.target_id %}draggable="true"{% endif %}
+          data-release-card
+          data-target-id="{{ slot.target_id }}"
+          data-current-step="{{ step }}"
+        >
+          <p class="release-stage-title">{{ slot.title }}</p>
+          {% if slot.path %}
+          <p class="release-stage-path mono">{{ slot.path }}</p>
+          {% endif %}
+          {% if slot.last_modified_at %}
+          <p class="release-stage-meta">Updated {{ slot.last_modified_at }}</p>
+          {% endif %}
+        </div>
         {% else %}
-        <p class="release-stage-empty">No folder</p>
+        <p class="release-stage-empty">Drop release here</p>
         {% endif %}
       </div>
       {% endfor %}

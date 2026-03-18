@@ -551,8 +551,132 @@
     });
   }
 
+  function initReleases() {
+    const rows = Array.from(document.querySelectorAll('[data-release-row]'));
+    if (!rows.length) {
+      return;
+    }
+
+    let dragState = null;
+
+    async function updateReleaseStep(targetId, deploymentStep) {
+      const response = await fetch(`/api/releases/targets/${encodeURIComponent(targetId)}/step`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({ deployment_step: deploymentStep }),
+      });
+
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch (error) {
+        payload = null;
+      }
+
+      if (!response.ok || !payload || !payload.ok) {
+        throw new Error((payload && payload.message) || 'Could not update release stage');
+      }
+    }
+
+    function clearDropState() {
+      document.querySelectorAll('[data-release-dropzone]').forEach((zone) => {
+        zone.classList.remove('is-drop-target');
+      });
+      document.querySelectorAll('[data-release-card]').forEach((card) => {
+        card.classList.remove('is-dragging');
+      });
+      dragState = null;
+    }
+
+    rows.forEach((row) => {
+      const dropzones = Array.from(row.querySelectorAll('[data-release-dropzone]'));
+      const cards = Array.from(row.querySelectorAll('[data-release-card][draggable="true"]'));
+
+      cards.forEach((card) => {
+        card.addEventListener('dragstart', (event) => {
+          const targetId = String(card.dataset.targetId || '').trim();
+          const currentStep = String(card.dataset.currentStep || '').trim().toUpperCase();
+          if (!targetId || !currentStep) {
+            event.preventDefault();
+            return;
+          }
+
+          dragState = { row, targetId, currentStep, card };
+          card.classList.add('is-dragging');
+          if (event.dataTransfer) {
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('text/plain', targetId);
+          }
+        });
+
+        card.addEventListener('dragend', () => {
+          clearDropState();
+        });
+      });
+
+      dropzones.forEach((zone) => {
+        zone.addEventListener('dragover', (event) => {
+          if (!dragState || dragState.row !== row) {
+            return;
+          }
+
+          const targetStep = String(zone.dataset.step || '').trim().toUpperCase();
+          const slotTargetId = String(zone.dataset.slotTargetId || '').trim();
+          if (!targetStep || targetStep === dragState.currentStep || (slotTargetId && slotTargetId !== dragState.targetId)) {
+            return;
+          }
+
+          event.preventDefault();
+          if (event.dataTransfer) {
+            event.dataTransfer.dropEffect = 'move';
+          }
+          zone.classList.add('is-drop-target');
+        });
+
+        zone.addEventListener('dragleave', (event) => {
+          if (!zone.contains(event.relatedTarget)) {
+            zone.classList.remove('is-drop-target');
+          }
+        });
+
+        zone.addEventListener('drop', async (event) => {
+          if (!dragState || dragState.row !== row) {
+            return;
+          }
+
+          const targetStep = String(zone.dataset.step || '').trim().toUpperCase();
+          const slotTargetId = String(zone.dataset.slotTargetId || '').trim();
+          if (!targetStep || targetStep === dragState.currentStep || (slotTargetId && slotTargetId !== dragState.targetId)) {
+            clearDropState();
+            return;
+          }
+
+          event.preventDefault();
+          const { targetId, card } = dragState;
+          card.classList.add('is-saving');
+
+          try {
+            await updateReleaseStep(targetId, targetStep);
+            window.location.reload();
+          } catch (error) {
+            card.classList.remove('is-saving');
+            clearDropState();
+            window.alert(error instanceof Error ? error.message : 'Could not update release stage');
+          }
+        });
+      });
+    });
+  }
+
   if (page === 'server-health') {
     initServerHealth();
+  }
+
+  if (page === 'releases') {
+    initReleases();
   }
 
   if (page === 'sla-payments') {
