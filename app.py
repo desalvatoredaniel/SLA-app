@@ -964,6 +964,107 @@ def _build_release_view() -> list[dict[str, Any]]:
     return combined
 
 
+def _release_step_for_board(item: dict[str, Any]) -> str:
+    step = str(item.get("deployment_step_override") or item.get("deployment_step") or "").strip().upper()
+    if step in {"QA", "STAGE", "PROD"}:
+        return step
+
+    folder_name = str(item.get("folder_name") or "").strip()
+    file_path = str(item.get("file_path") or item.get("deployment_file_path") or "").strip()
+    inferred = _infer_deployment_step(f"{folder_name} {file_path}")
+    if inferred in {"QA", "STAGE", "PROD"}:
+        return inferred
+
+    environment = str(item.get("environment") or "").strip().lower()
+    if environment == "development":
+        return "QA"
+    if environment == "staging":
+        return "STAGE"
+    if environment == "production":
+        return "PROD"
+    return ""
+
+
+def _build_release_board(release_items: list[dict[str, Any]], release_targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+
+    def ensure_row(release_key: str, fallback_name: str) -> dict[str, Any]:
+        canonical_key = _canonical_release_key(release_key or fallback_name)
+        row = rows.get(canonical_key)
+        if row is None:
+            row = {
+                "release_key": release_key or fallback_name,
+                "display_name": fallback_name or release_key or "Unknown Release",
+                "steps": {"QA": None, "STAGE": None, "PROD": None},
+                "latest_activity": datetime.min.replace(tzinfo=timezone.utc),
+                "unassigned_count": 0,
+            }
+            rows[canonical_key] = row
+        return row
+
+    for target in release_targets:
+        folder_name = str(target.get("folder_name") or Path(str(target.get("file_path") or "")).name).strip()
+        file_path = str(target.get("file_path") or "").strip()
+        release_key = str(target.get("release_key_override") or "").strip() or _extract_release_reference(folder_name) or folder_name or file_path
+        custom_label = str(target.get("label") or "").strip()
+        row = ensure_row(release_key, custom_label or release_key or folder_name or file_path)
+        if custom_label:
+            row["display_name"] = custom_label
+
+        step = _release_step_for_board(target)
+        modified_dt = _parse_checked_at(str(target.get("last_modified_at") or "")) or datetime.min.replace(tzinfo=timezone.utc)
+        if modified_dt > row["latest_activity"]:
+            row["latest_activity"] = modified_dt
+
+        slot = {
+            "title": custom_label or folder_name or release_key,
+            "path": file_path,
+            "last_modified_at": str(target.get("last_modified_at") or "").strip(),
+            "status": "available" if bool(target.get("exists", False)) else "missing",
+            "folder_name": folder_name,
+        }
+        if step in {"QA", "STAGE", "PROD"}:
+            existing_slot = row["steps"].get(step)
+            existing_dt = (
+                _parse_checked_at(str(existing_slot.get("last_modified_at") or "")) if isinstance(existing_slot, dict) else None
+            ) or datetime.min.replace(tzinfo=timezone.utc)
+            if modified_dt >= existing_dt:
+                row["steps"][step] = slot
+        else:
+            row["unassigned_count"] = int(row.get("unassigned_count") or 0) + 1
+
+    if not rows:
+        for release in release_items:
+            release_key = str(release.get("release_key") or release.get("version") or "").strip() or str(release.get("id") or "")
+            display_name = str(release.get("name") or release_key or "Unknown Release").strip()
+            row = ensure_row(release_key, display_name)
+            if display_name:
+                row["display_name"] = display_name
+
+            step = _release_step_for_board(release)
+            modified_dt = _release_sort_key(release)
+            if modified_dt > row["latest_activity"]:
+                row["latest_activity"] = modified_dt
+
+            slot = {
+                "title": str(release.get("version") or display_name or release_key).strip(),
+                "path": str(release.get("deployment_file_path") or "").strip(),
+                "last_modified_at": str(release.get("deployed_at") or "").strip(),
+                "status": str(release.get("status") or "available").strip(),
+                "folder_name": str(release.get("version") or "").strip(),
+            }
+            if step in {"QA", "STAGE", "PROD"}:
+                row["steps"][step] = slot
+            else:
+                row["unassigned_count"] = int(row.get("unassigned_count") or 0) + 1
+
+    board_rows = list(rows.values())
+    board_rows.sort(key=lambda item: item.get("latest_activity") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    for row in board_rows:
+        row.pop("latest_activity", None)
+    return board_rows
+
+
 def _sync_release_tracker_once(*, force: bool = False) -> dict[str, Any]:
     with RELEASE_TRACKER_LOCK:
         config = deepcopy(release_tracker_config)
@@ -1869,6 +1970,7 @@ def releases() -> str:
     with RELEASE_TRACKER_LOCK:
         tracker_snapshot = dict(release_tracker_config)
         targets_snapshot = [dict(item) for item in release_tracker_targets if bool(item.get("is_enabled", True))]
+    release_board = _build_release_board(release_items, targets_snapshot)
 
     notice_code = request.args.get("notice")
     releases_count = _coerce_int(request.args.get("releases"), 0, 0, 1_000_000)
@@ -1893,14 +1995,15 @@ def releases() -> str:
         "releases.html",
         page_title="Releases",
         active_page="releases",
-        releases=release_items,
+        release_board=release_board,
         release_notice=release_notice,
         release_tracker=tracker_snapshot,
         release_targets=targets_snapshot,
+        tracked_release_count=len(release_board),
         stats={
-            "deployed": sum(item["status"] == "deployed" for item in release_items),
-            "in_progress": sum(item["status"] == "in-progress" for item in release_items),
-            "scheduled": sum(item["status"] == "scheduled" for item in release_items),
+            "qa": sum(1 for item in release_board if item["steps"].get("QA")),
+            "stage": sum(1 for item in release_board if item["steps"].get("STAGE")),
+            "prod": sum(1 for item in release_board if item["steps"].get("PROD")),
         },
     )
 

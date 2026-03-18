@@ -19,7 +19,7 @@
       <span><b>{{ 'ON' if release_tracker.is_enabled else 'OFF' }}</b> tracker</span>
       <span><b>{{ release_tracker.poll_interval_seconds }}</b>s interval</span>
       <span><b>{{ release_targets|length }}</b> discovered folders</span>
-      <span><b>{{ releases|length }}</b> tracked releases</span>
+      <span><b>{{ tracked_release_count }}</b> tracked releases</span>
     </div>
     {% if release_tracker.base_path %}
     <p class="subtle">Base path: <span class="mono">{{ release_tracker.base_path }}</span></p>
@@ -79,151 +79,154 @@
 </section>
 
 <section class="panel">
-  <div class="section-row">
-    <h2 class="section-title">
-      <i data-lucide="folders"></i>
-      Discovered Release Folders
-    </h2>
-  </div>
+  <details class="group-collapsible" open>
+    <summary class="group-summary">
+      <div class="group-summary-left">
+        <span class="section-title">
+          <i data-lucide="folders"></i>
+          Discovered Release Folders
+        </span>
+        <span class="group-summary-count">{{ release_targets|length }}</span>
+      </div>
+      <span class="group-summary-toggle">Toggle</span>
+    </summary>
 
-  <div class="list-stack">
-    {% if release_targets %}
-      {% for target in release_targets %}
-      <article class="list-row {% if not target.is_enabled %}is-muted{% endif %}">
-        <div>
-          <div class="row-name">
-            <span class="status-dot {{ 'healthy' if target.exists and target.is_enabled else 'warning' }}"></span>
-            <strong>{{ target.label or target.folder_name or target.file_path }}</strong>
-            {% if target.label %}
-            <span class="token">Folder: {{ target.folder_name }}</span>
-            {% endif %}
-            {% if not target.is_enabled %}
-            <span class="status-pill warning">IGNORED</span>
-            {% endif %}
-          </div>
-          <p class="subtle mono">{{ target.file_path }}</p>
-          <div class="inline-stats">
-            {% if target.release_key_override %}<span><b>{{ target.release_key_override }}</b> release</span>{% endif %}
-            {% if target.deployment_step_override %}<span><b>{{ target.deployment_step_override }}</b> step</span>{% endif %}
-            <span><b>{{ 'FOUND' if target.exists else 'MISSING' }}</b></span>
-            {% if target.last_modified_at %}<span><b>{{ target.last_modified_at }}</b> modified</span>{% endif %}
-          </div>
-          <div class="button-row">
-            <form method="post" action="/config/releases/targets/{{ target.id }}/rename" class="rename-form">
-              <input
-                name="label"
-                value="{{ target.label or '' }}"
-                placeholder="Release name override"
-                aria-label="Release name override"
-              />
-              <button type="submit" class="btn primary">
-                <i data-lucide="pencil"></i>
-                Save Name
-              </button>
-            </form>
-            <form method="post" action="/config/releases/targets/{{ target.id }}/toggle-ignore">
-              <button type="submit" class="btn {% if target.is_enabled %}danger{% endif %}">
-                <i data-lucide="{% if target.is_enabled %}x{% else %}rotate-ccw{% endif %}"></i>
-                {% if target.is_enabled %}Ignore{% else %}Restore{% endif %}
-              </button>
-            </form>
-          </div>
-        </div>
-      </article>
-      {% endfor %}
-    {% else %}
-    <p class="subtle">No active release folders from the last 2 years are visible. Save a base path and run a scan.</p>
-    {% endif %}
-  </div>
+    <div class="group-list">
+      <div class="list-stack">
+        {% if release_targets %}
+          {% for target in release_targets %}
+          <article class="list-row">
+            <div>
+              <div class="row-name">
+                <span class="status-dot {{ 'healthy' if target.exists else 'warning' }}"></span>
+                <strong>{{ target.label or target.folder_name or target.file_path }}</strong>
+                {% if target.label %}
+                <span class="token">Folder: {{ target.folder_name }}</span>
+                {% endif %}
+              </div>
+              <p class="subtle mono">{{ target.file_path }}</p>
+              <div class="inline-stats">
+                {% if target.release_key_override %}<span><b>{{ target.release_key_override }}</b> release</span>{% endif %}
+                {% if target.deployment_step_override %}<span><b>{{ target.deployment_step_override }}</b> step</span>{% endif %}
+                <span><b>{{ 'FOUND' if target.exists else 'MISSING' }}</b></span>
+                {% if target.last_modified_at %}<span><b>{{ target.last_modified_at }}</b> modified</span>{% endif %}
+              </div>
+              <div class="button-row">
+                <form method="post" action="/config/releases/targets/{{ target.id }}/rename" class="rename-form">
+                  <input
+                    name="label"
+                    value="{{ target.label or '' }}"
+                    placeholder="Release name override"
+                    aria-label="Release name override"
+                  />
+                  <button type="submit" class="btn primary">
+                    <i data-lucide="pencil"></i>
+                    Save Name
+                  </button>
+                </form>
+                <form method="post" action="/config/releases/targets/{{ target.id }}/toggle-ignore">
+                  <button type="submit" class="btn danger">
+                    <i data-lucide="x"></i>
+                    Ignore
+                  </button>
+                </form>
+              </div>
+            </div>
+          </article>
+          {% endfor %}
+        {% else %}
+        <p class="subtle">No active release folders from the last 2 years are visible. Save a base path and run a scan.</p>
+        {% endif %}
+      </div>
+    </div>
+  </details>
 </section>
 
 <section class="grid stats-grid cols-3">
   <article class="panel stat healthy">
     <div>
-      <p class="label">Deployed</p>
-      <p class="value green">{{ stats.deployed }}</p>
-    </div>
-    <i data-lucide="check-circle-2"></i>
-  </article>
-  <article class="panel stat processing">
-    <div>
-      <p class="label">In Progress</p>
-      <p class="value blue">{{ stats.in_progress }}</p>
+      <p class="label">QA</p>
+      <p class="value blue">{{ stats.qa }}</p>
     </div>
     <i data-lucide="clock-3"></i>
   </article>
-  <article class="panel stat scheduled">
+  <article class="panel stat processing">
     <div>
-      <p class="label">Scheduled</p>
-      <p class="value purple">{{ stats.scheduled }}</p>
+      <p class="label">Stage</p>
+      <p class="value yellow">{{ stats.stage }}</p>
     </div>
     <i data-lucide="calendar"></i>
+  </article>
+  <article class="panel stat scheduled">
+    <div>
+      <p class="label">Prod</p>
+      <p class="value green">{{ stats.prod }}</p>
+    </div>
+    <i data-lucide="rocket"></i>
   </article>
 </section>
 
 <section class="panel">
-  <h2 class="section-title">
-    <i data-lucide="package"></i>
-    Release Timeline
-  </h2>
+  <div class="section-row">
+    <h2 class="section-title">
+      <i data-lucide="package"></i>
+      Release Board
+    </h2>
+  </div>
 
-  <div class="list-stack">
-    {% for release in releases %}
-    <article class="release-card {{ release.status }}">
-      <span class="status-line"></span>
-      <div class="release-header">
-        <div>
-          <div class="release-title-wrap">
-            <span class="release-icon">
-              {% if release.status == 'deployed' %}<i data-lucide="check-circle-2"></i>{% endif %}
-              {% if release.status == 'in-progress' %}<i data-lucide="clock-3"></i>{% endif %}
-              {% if release.status == 'scheduled' %}<i data-lucide="calendar"></i>{% endif %}
-              {% if release.status == 'failed' %}<i data-lucide="alert-circle"></i>{% endif %}
-            </span>
-            <h3>{{ release.name if release.source_type == 'release_folder' else release.version }}</h3>
-            {% if release.source_type == 'release_folder' and release.version and release.version != release.name %}
-            <span class="token">{{ release.version }}</span>
-            {% endif %}
-            <span class="env-pill {{ release.environment }}">{{ release.environment }}</span>
-            {% if release.deployment_step %}
-            <span class="token">{{ release.deployment_step }}</span>
-            {% endif %}
-          </div>
-          <p class="subtle">
-            {% if release.source_type == 'release_folder' %}
-            {{ release.deployment_file_path }}
-            {% else %}
-            {{ release.name }}
-            {% endif %}
-          </p>
+  {% if release_board %}
+  <div class="release-board">
+    <div class="release-board-header">
+      <span>Release</span>
+      <span>QA</span>
+      <span>STAGE</span>
+      <span>PROD</span>
+    </div>
+
+    {% for release in release_board %}
+    <article class="release-board-row">
+      <div class="release-board-release">
+        <div class="release-title-wrap">
+          <h3>{{ release.display_name }}</h3>
+          {% if release.release_key and release.release_key != release.display_name %}
+          <span class="token">{{ release.release_key }}</span>
+          {% endif %}
+          {% if release.unassigned_count %}
+          <span class="status-pill warning">{{ release.unassigned_count }} UNASSIGNED</span>
+          {% endif %}
         </div>
-        <span class="status-pill {{ release.status }}">{{ release.status|replace('-', ' ')|upper }}</span>
       </div>
 
-      <div class="grid release-meta cols-4">
-        {% if release.source_type == 'release_folder' %}
-        <div><p>Source</p><b class="mono">{{ release.deployed_by }}</b></div>
-        <div><p>Last Changed</p><b class="mono">{{ release.deployed_at }}</b></div>
-        <div><p>Release Folder</p><b class="mono">{{ release.version }}</b></div>
-        <div><p>Folder Status</p><b class="mono">{{ 'FOUND' if release.file_exists else 'MISSING' }}</b></div>
+      {% for step in ['QA', 'STAGE', 'PROD'] %}
+      {% set slot = release.steps[step] %}
+      <div class="release-stage {{ step|lower }} {% if slot %}has-item{% else %}is-empty{% endif %}">
+        <div class="release-stage-head">
+          <span class="release-stage-label">{{ step }}</span>
+          {% if slot %}
+          <span class="status-pill {{ 'healthy' if slot.status in ['available', 'deployed'] else 'processing' if slot.status in ['in-progress'] else 'warning' if slot.status in ['scheduled'] else 'critical' }}">
+            {{ slot.status|replace('-', ' ')|upper }}
+          </span>
+          {% endif %}
+        </div>
+
+        {% if slot %}
+        <p class="release-stage-title">{{ slot.title }}</p>
+        {% if slot.path %}
+        <p class="release-stage-path mono">{{ slot.path }}</p>
+        {% endif %}
+        {% if slot.last_modified_at %}
+        <p class="release-stage-meta">Updated {{ slot.last_modified_at }}</p>
+        {% endif %}
         {% else %}
-        <div><p>Deployed By</p><b class="mono">{{ release.deployed_by }}</b></div>
-        <div><p>Time</p><b class="mono">{{ release.deployed_at }}</b></div>
-        <div><p>Services</p><b class="mono">{{ release.services }} updated</b></div>
-        <div><p>Commits</p><b class="mono">{{ release.commits }} changes</b></div>
+        <p class="release-stage-empty">No folder</p>
         {% endif %}
       </div>
-      {% if release.deployment_file_path %}
-      <p class="release-path mono">Release folder path: {{ release.deployment_file_path }}</p>
-      {% endif %}
-
-      {% if release.status == 'in-progress' %}
-      <div class="progress-track">
-        <div class="progress-fill"></div>
-      </div>
-      {% endif %}
+      {% endfor %}
     </article>
     {% endfor %}
   </div>
+  {% else %}
+  <p class="subtle">No releases available to place on the QA / STAGE / PROD board yet.</p>
+  {% endif %}
 </section>
 {% endblock %}
