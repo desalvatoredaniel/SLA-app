@@ -8,7 +8,6 @@ import os
 import re
 import smtplib
 import ssl
-import sys
 import threading
 from base64 import b64encode
 from copy import deepcopy
@@ -32,6 +31,7 @@ ENV_LINE_PATTERN = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")
 SERVER_HEALTH_CONFIG_PATH = Path(app.instance_path) / "server_health_checks.json"
 RELEASE_TRACKER_CONFIG_PATH = Path(app.instance_path) / "release_tracker_config.json"
 RELEASE_TRACKER_EVENTS_PATH = Path(app.instance_path) / "release_tracker_events.json"
+RELEASE_TRACKER_TARGETS_PATH = Path(app.instance_path) / "release_tracker_targets.json"
 ENV_PATH = Path(os.getenv("SLA_APP_ENV_PATH", ".env"))
 RELEASE_REF_PATTERN = re.compile(r"\b(?:R\d+(?:\.\d+)+|V\d+(?:\.\d+){1,3}(?:[-+._A-Za-z0-9]*)?)\b", re.IGNORECASE)
 
@@ -85,19 +85,12 @@ EMAIL_SUBJECT_PREFIX = os.getenv("SLA_ALERT_SUBJECT_PREFIX", "[SLA Server Health
 
 RELEASE_TRACKER_DEFAULTS: dict[str, Any] = {
     "is_enabled": False,
-    "provider": "win32",
-    "outlook_mailbox": os.getenv("SLA_RELEASE_OUTLOOK_MAILBOX", "").strip(),
-    "outlook_folder_path": os.getenv("SLA_RELEASE_OUTLOOK_FOLDER_PATH", "Inbox").strip() or "Inbox",
-    "subject_filter": os.getenv("SLA_RELEASE_SUBJECT_FILTER", "").strip(),
-    "sender_filter": os.getenv("SLA_RELEASE_SENDER_FILTER", "").strip(),
-    "only_unseen": _env_bool("SLA_RELEASE_ONLY_UNSEEN", True),
-    "mark_seen": _env_bool("SLA_RELEASE_MARK_SEEN", False),
+    "provider": "file_paths",
     "poll_interval_seconds": _env_int("SLA_RELEASE_POLL_INTERVAL_SECONDS", 180, 30, 86_400),
-    "only_newer_than_last_run": _env_bool("SLA_RELEASE_ONLY_NEWER_THAN_LAST_RUN", True),
-    "last_processed_at": "",
     "last_run_at": "",
     "last_error": "",
 }
+RELEASE_STEP_OPTIONS = ("", "DEV", "QA", "STAGE", "PROD")
 
 SERVER_GROUP_OPTIONS = (
     "LEAP BO PROD",
@@ -553,29 +546,15 @@ def _save_server_health_checks() -> None:
 
 
 def _normalize_release_tracker_config(raw: dict[str, Any]) -> dict[str, Any]:
-    provider = str(raw.get("provider") or RELEASE_TRACKER_DEFAULTS["provider"]).strip().lower()
-    if provider != "win32":
-        provider = "win32"
     return {
         "is_enabled": bool(raw.get("is_enabled", RELEASE_TRACKER_DEFAULTS["is_enabled"])),
-        "provider": provider,
-        "outlook_mailbox": str(raw.get("outlook_mailbox") or RELEASE_TRACKER_DEFAULTS["outlook_mailbox"]).strip(),
-        "outlook_folder_path": str(raw.get("outlook_folder_path") or RELEASE_TRACKER_DEFAULTS["outlook_folder_path"]).strip()
-        or "Inbox",
-        "subject_filter": str(raw.get("subject_filter") or RELEASE_TRACKER_DEFAULTS["subject_filter"]).strip(),
-        "sender_filter": str(raw.get("sender_filter") or RELEASE_TRACKER_DEFAULTS["sender_filter"]).strip(),
-        "only_unseen": bool(raw.get("only_unseen", RELEASE_TRACKER_DEFAULTS["only_unseen"])),
-        "mark_seen": bool(raw.get("mark_seen", RELEASE_TRACKER_DEFAULTS["mark_seen"])),
+        "provider": "file_paths",
         "poll_interval_seconds": _coerce_int(
             raw.get("poll_interval_seconds"),
             int(RELEASE_TRACKER_DEFAULTS["poll_interval_seconds"]),
             30,
             86_400,
         ),
-        "only_newer_than_last_run": bool(
-            raw.get("only_newer_than_last_run", RELEASE_TRACKER_DEFAULTS["only_newer_than_last_run"])
-        ),
-        "last_processed_at": str(raw.get("last_processed_at") or "").strip(),
         "last_run_at": str(raw.get("last_run_at") or "").strip(),
         "last_error": str(raw.get("last_error") or "").strip(),
     }
@@ -604,6 +583,57 @@ def _save_release_tracker_config() -> None:
     RELEASE_TRACKER_CONFIG_PATH.write_text(payload, encoding="utf-8")
 
 
+def _normalize_release_tracker_target(raw: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    file_path = str(raw.get("file_path") or "").strip()
+    if not file_path:
+        return None
+
+    deployment_step_override = str(raw.get("deployment_step_override") or "").strip().upper()
+    if deployment_step_override not in RELEASE_STEP_OPTIONS:
+        deployment_step_override = ""
+
+    return {
+        "id": str(raw.get("id") or uuid4().hex),
+        "file_path": file_path,
+        "label": str(raw.get("label") or "").strip(),
+        "release_key_override": str(raw.get("release_key_override") or "").strip(),
+        "deployment_step_override": deployment_step_override,
+        "is_enabled": bool(raw.get("is_enabled", True)),
+        "exists": bool(raw.get("exists", False)),
+        "last_seen_at": str(raw.get("last_seen_at") or "").strip(),
+        "last_modified_at": str(raw.get("last_modified_at") or "").strip(),
+        "file_size": _coerce_int(raw.get("file_size"), 0, 0, 10_000_000_000),
+    }
+
+
+def _load_release_tracker_targets() -> list[dict[str, Any]]:
+    _ensure_instance_dir()
+    if not RELEASE_TRACKER_TARGETS_PATH.exists():
+        return []
+    try:
+        payload = json.loads(RELEASE_TRACKER_TARGETS_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    if not isinstance(payload, list):
+        return []
+
+    targets: list[dict[str, Any]] = []
+    for item in payload:
+        normalized = _normalize_release_tracker_target(item)
+        if normalized is not None:
+            targets.append(normalized)
+    return targets
+
+
+def _save_release_tracker_targets() -> None:
+    _ensure_instance_dir()
+    with RELEASE_TRACKER_LOCK:
+        payload = json.dumps(release_tracker_targets, indent=2)
+    RELEASE_TRACKER_TARGETS_PATH.write_text(payload, encoding="utf-8")
+
+
 def _normalize_release_tracker_event(raw: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
@@ -624,6 +654,7 @@ def _normalize_release_tracker_event(raw: dict[str, Any]) -> dict[str, Any] | No
 
     return {
         "id": str(raw.get("id") or uuid4().hex),
+        "source_type": str(raw.get("source_type") or "").strip(),
         "version": str(raw.get("version") or "n/a").strip() or "n/a",
         "release_key": release_key,
         "name": str(raw.get("name") or "Imported Deployment").strip() or "Imported Deployment",
@@ -635,6 +666,15 @@ def _normalize_release_tracker_event(raw: dict[str, Any]) -> dict[str, Any] | No
         "services": _coerce_int(raw.get("services"), 1, 0, 10_000),
         "commits": _coerce_int(raw.get("commits"), 0, 0, 100_000),
         "deployment_file_path": str(raw.get("deployment_file_path") or "").strip(),
+        "tracked_paths_count": _coerce_int(raw.get("tracked_paths_count"), 0, 0, 10_000),
+        "available_paths_count": _coerce_int(raw.get("available_paths_count"), 0, 0, 10_000),
+        "file_exists": bool(raw.get("file_exists", False)),
+        "last_modified_at": str(raw.get("last_modified_at") or "").strip(),
+        "tracked_file_paths": [
+            str(value).strip()
+            for value in (raw.get("tracked_file_paths") or [])
+            if str(value).strip()
+        ],
         "source_uid": str(raw.get("source_uid") or "").strip(),
         "source_uids": source_uids,
         "source_thread_id": str(raw.get("source_thread_id") or "").strip(),
@@ -668,67 +708,6 @@ def _save_release_tracker_events() -> None:
     with RELEASE_TRACKER_LOCK:
         payload = json.dumps(release_tracker_events, indent=2)
     RELEASE_TRACKER_EVENTS_PATH.write_text(payload, encoding="utf-8")
-
-
-def _is_windows_platform() -> bool:
-    return sys.platform.startswith("win")
-
-
-def _coerce_outlook_datetime(value: Any) -> datetime:
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            return datetime.fromtimestamp(value.timestamp(), tz=timezone.utc)
-        return value.astimezone(timezone.utc)
-
-    if hasattr(value, "timestamp"):
-        try:
-            return datetime.fromtimestamp(float(value.timestamp()), tz=timezone.utc)
-        except Exception:  # noqa: BLE001
-            pass
-
-    text = str(value or "").strip()
-    if text:
-        for fmt in ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
-            try:
-                naive = datetime.strptime(text, fmt)
-                return datetime.fromtimestamp(naive.timestamp(), tz=timezone.utc)
-            except ValueError:
-                continue
-
-    return datetime.now(timezone.utc)
-
-
-def _resolve_outlook_folder(namespace: Any, mailbox_name: str, folder_path: str) -> Any:
-    inbox_folder = None
-    if mailbox_name:
-        stores = namespace.Stores
-        for index in range(1, int(stores.Count) + 1):
-            store = stores.Item(index)
-            if str(getattr(store, "DisplayName", "") or "").strip().lower() == mailbox_name.lower():
-                inbox_folder = store.GetDefaultFolder(6)
-                break
-        if inbox_folder is None:
-            raise RuntimeError(f'Outlook mailbox "{mailbox_name}" not found')
-    else:
-        inbox_folder = namespace.GetDefaultFolder(6)
-
-    parts = [segment.strip() for segment in re.split(r"[\\/]+", folder_path) if segment.strip()]
-    if parts and parts[0].lower() == "inbox":
-        parts = parts[1:]
-
-    current = inbox_folder
-    for part in parts:
-        next_folder = None
-        folders = current.Folders
-        for index in range(1, int(folders.Count) + 1):
-            candidate = folders.Item(index)
-            if str(getattr(candidate, "Name", "") or "").strip().lower() == part.lower():
-                next_folder = candidate
-                break
-        if next_folder is None:
-            raise RuntimeError(f'Outlook folder "{folder_path}" not found under Inbox')
-        current = next_folder
-    return current
 
 
 def _canonical_release_key(value: str | None) -> str:
@@ -799,6 +778,158 @@ def _infer_release_environment(deployment_path: str) -> str:
     return "production"
 
 
+def _release_step_rank(step: str) -> int:
+    return {"": 0, "DEV": 1, "QA": 2, "STAGE": 3, "PROD": 4}.get(str(step or "").upper(), 0)
+
+
+def _normalize_file_release_status(*, file_exists: bool, deployment_step: str) -> str:
+    if not file_exists:
+        return "scheduled"
+    if str(deployment_step).upper() == "PROD":
+        return "deployed"
+    if str(deployment_step).upper() in {"DEV", "QA", "STAGE"}:
+        return "in-progress"
+    return "deployed"
+
+
+def _parse_release_target_bulk_line(line: str) -> tuple[str, str, str, str] | None:
+    raw = str(line or "").strip()
+    if not raw or raw.startswith("#"):
+        return None
+    parts = [part.strip() for part in raw.split(",")]
+    file_path = parts[0] if parts else ""
+    release_key_override = parts[1] if len(parts) > 1 else ""
+    deployment_step_override = parts[2].upper() if len(parts) > 2 else ""
+    label = ",".join(parts[3:]).strip() if len(parts) > 3 else ""
+    if deployment_step_override not in RELEASE_STEP_OPTIONS:
+        deployment_step_override = ""
+    if not file_path:
+        return None
+    return file_path, release_key_override, deployment_step_override, label
+
+
+def _build_release_events_from_targets(
+    targets: list[dict[str, Any]],
+    existing_events: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    now_utc = datetime.now(timezone.utc)
+    updated_targets: list[dict[str, Any]] = []
+    existing_ids_by_key = {
+        _canonical_release_key(str(event.get("release_key") or str(event.get("version") or ""))): str(event.get("id") or "")
+        for event in existing_events
+    }
+    grouped: dict[str, dict[str, Any]] = {}
+    processed_count = 0
+
+    for target in targets:
+        working_target = dict(target)
+        path_value = str(working_target.get("file_path") or "").strip()
+        if not path_value:
+            continue
+
+        processed_count += 1
+        target_path = Path(path_value).expanduser()
+        file_exists = target_path.exists()
+        last_modified_at = str(working_target.get("last_modified_at") or "").strip()
+        file_size = int(working_target.get("file_size") or 0)
+
+        if file_exists:
+            try:
+                stats = target_path.stat()
+                modified_dt = datetime.fromtimestamp(stats.st_mtime, tz=timezone.utc)
+                last_modified_at = modified_dt.isoformat()
+                file_size = int(stats.st_size)
+                working_target["last_seen_at"] = now_utc.isoformat()
+            except OSError:
+                file_exists = False
+        working_target["exists"] = file_exists
+        working_target["last_modified_at"] = last_modified_at
+        working_target["file_size"] = file_size
+        updated_targets.append(_normalize_release_tracker_target(working_target) or working_target)
+
+        if not bool(working_target.get("is_enabled", True)):
+            continue
+
+        release_ref = str(working_target.get("release_key_override") or "").strip()
+        if not release_ref:
+            release_ref = _extract_release_reference(f"{path_value} {working_target.get('label', '')}")
+        release_key = _canonical_release_key(release_ref or path_value)
+        deployment_step = str(working_target.get("deployment_step_override") or "").strip().upper()
+        environment = _environment_for_step(deployment_step, path_value)
+        status = _normalize_file_release_status(file_exists=file_exists, deployment_step=deployment_step)
+        display_name = str(working_target.get("label") or "").strip() or (target_path.name if target_path.name else path_value)
+
+        modified_dt = _parse_checked_at(last_modified_at)
+        candidate_rank = (
+            1 if file_exists else 0,
+            _release_step_rank(deployment_step),
+            modified_dt.timestamp() if modified_dt is not None else 0.0,
+        )
+
+        event = grouped.get(release_key)
+        if event is None:
+            existing_id = existing_ids_by_key.get(release_key)
+            event = {
+                "id": existing_id or uuid4().hex,
+                "source_type": "file_target",
+                "version": release_ref or "n/a",
+                "release_key": release_ref or path_value,
+                "name": display_name,
+                "status": status,
+                "environment": environment,
+                "deployment_step": deployment_step,
+                "deployed_by": "File Tracker",
+                "deployed_at": modified_dt.astimezone().strftime("%Y-%m-%d %H:%M") if modified_dt is not None else "Not found",
+                "services": 0,
+                "commits": 0,
+                "deployment_file_path": path_value,
+                "tracked_paths_count": 0,
+                "available_paths_count": 0,
+                "file_exists": file_exists,
+                "last_modified_at": last_modified_at,
+                "tracked_file_paths": [],
+                "source_uid": "",
+                "source_uids": [],
+                "source_thread_id": "",
+                "source_subject": "",
+                "source_doc_ref": "",
+                "imported_at": now_utc.isoformat(),
+                "_rank": candidate_rank,
+            }
+            grouped[release_key] = event
+
+        event["tracked_paths_count"] = int(event.get("tracked_paths_count") or 0) + 1
+        if file_exists:
+            event["available_paths_count"] = int(event.get("available_paths_count") or 0) + 1
+        tracked_paths = list(event.get("tracked_file_paths") or [])
+        if path_value not in tracked_paths:
+            tracked_paths.append(path_value)
+        event["tracked_file_paths"] = tracked_paths
+
+        if candidate_rank >= tuple(event.get("_rank") or (0, 0, 0.0)):
+            event["name"] = display_name
+            event["status"] = status
+            event["environment"] = environment
+            event["deployment_step"] = deployment_step
+            event["deployment_file_path"] = path_value
+            event["file_exists"] = file_exists
+            event["last_modified_at"] = last_modified_at
+            event["deployed_at"] = modified_dt.astimezone().strftime("%Y-%m-%d %H:%M") if modified_dt is not None else "Not found"
+            event["_rank"] = candidate_rank
+
+    normalized_events: list[dict[str, Any]] = []
+    for grouped_event in grouped.values():
+        grouped_event["services"] = int(grouped_event.get("tracked_paths_count") or 0)
+        grouped_event["commits"] = int(grouped_event.get("available_paths_count") or 0)
+        grouped_event.pop("_rank", None)
+        normalized = _normalize_release_tracker_event(grouped_event)
+        if normalized is not None:
+            normalized_events.append(normalized)
+
+    normalized_events.sort(key=_release_sort_key, reverse=True)
+    return updated_targets, normalized_events, processed_count
+
+
 def _release_sort_key(item: dict[str, Any]) -> datetime:
     imported_at = str(item.get("imported_at") or "").strip()
     if imported_at:
@@ -816,269 +947,45 @@ def _release_sort_key(item: dict[str, Any]) -> datetime:
 def _build_release_view() -> list[dict[str, Any]]:
     with RELEASE_TRACKER_LOCK:
         imported = [deepcopy(item) for item in release_tracker_events]
-    combined = imported + [deepcopy(item) for item in RELEASES]
+        tracked_targets = [deepcopy(item) for item in release_tracker_targets]
+    combined = imported if tracked_targets else [deepcopy(item) for item in RELEASES]
     combined.sort(key=_release_sort_key, reverse=True)
     return combined
-
-
-def _sync_release_tracker_win32(
-    config: dict[str, Any],
-    existing_events: list[dict[str, Any]],
-) -> dict[str, Any]:
-    if not _is_windows_platform():
-        return {"ok": False, "imported": 0, "processed": 0, "message": "Win32 release tracker requires Windows."}
-
-    try:
-        import pythoncom  # type: ignore[import-not-found]
-        import win32com.client  # type: ignore[import-not-found]
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "ok": False,
-            "imported": 0,
-            "processed": 0,
-            "message": f"pywin32 is required for release tracker: {exc}",
-        }
-
-    subject_filter = str(config.get("subject_filter") or "").strip().lower()
-    sender_filter = str(config.get("sender_filter") or "").strip().lower()
-    only_unseen = bool(config.get("only_unseen"))
-    mark_seen = bool(config.get("mark_seen"))
-    only_newer = bool(config.get("only_newer_than_last_run"))
-    mailbox_name = str(config.get("outlook_mailbox") or "").strip()
-    folder_path = str(config.get("outlook_folder_path") or "Inbox").strip() or "Inbox"
-
-    last_processed_at = _parse_checked_at(str(config.get("last_processed_at") or ""))
-    events_working = [deepcopy(item) for item in existing_events]
-    existing_source_uids: set[str] = set()
-    index_by_release_key: dict[str, int] = {}
-    index_by_thread_id: dict[str, int] = {}
-    index_by_version: dict[str, int] = {}
-
-    for index, event in enumerate(events_working):
-        for uid in event.get("source_uids") or []:
-            uid_text = str(uid).strip()
-            if uid_text:
-                existing_source_uids.add(uid_text)
-        source_uid_value = str(event.get("source_uid") or "").strip()
-        if source_uid_value:
-            existing_source_uids.add(source_uid_value)
-
-        release_key_value = _canonical_release_key(str(event.get("release_key") or ""))
-        if release_key_value and release_key_value not in index_by_release_key:
-            index_by_release_key[release_key_value] = index
-
-        thread_id_value = str(event.get("source_thread_id") or "").strip()
-        if thread_id_value and thread_id_value not in index_by_thread_id:
-            index_by_thread_id[thread_id_value] = index
-
-        version_value = str(event.get("version") or "").strip().lower()
-        if version_value and version_value != "n/a" and version_value not in index_by_version:
-            index_by_version[version_value] = index
-
-    imported_count = 0
-    updated_count = 0
-    processed_count = 0
-    parse_errors: list[str] = []
-    latest_processed_at = last_processed_at
-    events_changed = False
-
-    pythoncom.CoInitialize()
-    try:
-        namespace = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
-        folder = _resolve_outlook_folder(namespace, mailbox_name, folder_path)
-        items = folder.Items
-        items.Sort("[ReceivedTime]", False)
-
-        total_items = int(getattr(items, "Count", 0))
-        for index in range(1, total_items + 1):
-            try:
-                item = items.Item(index)
-            except Exception:  # noqa: BLE001
-                continue
-
-            if str(getattr(item, "MessageClass", "") or "").strip().lower() != "ipm.note":
-                continue
-
-            subject = str(getattr(item, "Subject", "") or "").strip() or "Deployment"
-            sender_name = str(getattr(item, "SenderName", "") or "").strip()
-            sender_email = str(getattr(item, "SenderEmailAddress", "") or "").strip()
-            sender_value = f"{sender_name} {sender_email}".strip().lower()
-            if subject_filter and subject_filter not in subject.lower():
-                continue
-            if sender_filter and sender_filter not in sender_value:
-                continue
-            if only_unseen and not bool(getattr(item, "Unread", False)):
-                continue
-
-            received_at = _coerce_outlook_datetime(getattr(item, "ReceivedTime", None))
-            if only_newer and last_processed_at is not None and received_at <= last_processed_at:
-                continue
-
-            source_uid = str(getattr(item, "EntryID", "") or "").strip()
-            if not source_uid:
-                source_uid = f"outlook-item-{index}-{int(received_at.timestamp())}"
-            if source_uid in existing_source_uids:
-                continue
-
-            processed_count += 1
-            if latest_processed_at is None or received_at > latest_processed_at:
-                latest_processed_at = received_at
-
-            deployed_by = sender_name or sender_email or "Email Ingest"
-            deployed_at_label = received_at.strftime("%Y-%m-%d %H:%M")
-            body_text = str(getattr(item, "Body", "") or "")
-            message_text = f"{subject}\n{body_text}"
-            release_ref = _extract_release_reference(message_text)
-            if not release_ref:
-                release_ref = _extract_release_reference(subject)
-            release_key = _canonical_release_key(release_ref)
-            conversation_id = str(getattr(item, "ConversationID", "") or "").strip()
-            deployment_step = _infer_deployment_step(message_text)
-            inferred_status = _infer_release_status(message_text)
-            inferred_environment = _environment_for_step(deployment_step, message_text)
-
-            existing_index: int | None = None
-            if release_key:
-                existing_index = index_by_release_key.get(release_key)
-            if existing_index is None and conversation_id:
-                existing_index = index_by_thread_id.get(conversation_id)
-            if existing_index is None and release_ref:
-                existing_index = index_by_version.get(release_ref.lower())
-
-            now_iso = datetime.now(timezone.utc).isoformat()
-            if existing_index is not None:
-                current = dict(events_working[existing_index])
-                merged_uids = [str(uid).strip() for uid in (current.get("source_uids") or []) if str(uid).strip()]
-                if source_uid not in merged_uids:
-                    merged_uids.append(source_uid)
-                merged_uids = merged_uids[-50:]
-
-                if release_ref and (str(current.get("version") or "").lower() in {"", "n/a"}):
-                    current["version"] = release_ref
-                if release_ref:
-                    current["release_key"] = release_ref
-                current["status"] = inferred_status
-                current["environment"] = inferred_environment
-                if deployment_step:
-                    current["deployment_step"] = deployment_step
-                current["name"] = subject[:160] or str(current.get("name") or "Imported Deployment")
-                current["deployed_by"] = deployed_by[:80]
-                current["deployed_at"] = deployed_at_label
-                current["source_uid"] = source_uid
-                current["source_uids"] = merged_uids
-                if conversation_id:
-                    current["source_thread_id"] = conversation_id
-                current["source_subject"] = subject
-                current["imported_at"] = now_iso
-
-                normalized_current = _normalize_release_tracker_event(current)
-                if normalized_current is not None:
-                    events_working[existing_index] = normalized_current
-                    if release_key:
-                        index_by_release_key[release_key] = existing_index
-                    thread_value = str(normalized_current.get("source_thread_id") or "").strip()
-                    if thread_value:
-                        index_by_thread_id[thread_value] = existing_index
-                    version_value = str(normalized_current.get("version") or "").strip().lower()
-                    if version_value and version_value != "n/a":
-                        index_by_version[version_value] = existing_index
-                    existing_source_uids.add(source_uid)
-                    updated_count += 1
-                    events_changed = True
-            else:
-                event = {
-                    "id": uuid4().hex,
-                    "version": release_ref or "n/a",
-                    "release_key": release_ref,
-                    "name": subject[:160] or "Imported Deployment",
-                    "status": inferred_status,
-                    "environment": inferred_environment,
-                    "deployment_step": deployment_step,
-                    "deployed_by": deployed_by[:80],
-                    "deployed_at": deployed_at_label,
-                    "services": 0,
-                    "commits": 0,
-                    "deployment_file_path": "",
-                    "source_uid": source_uid,
-                    "source_uids": [source_uid],
-                    "source_thread_id": conversation_id,
-                    "source_subject": subject,
-                    "source_doc_ref": "",
-                    "imported_at": now_iso,
-                }
-                normalized_event = _normalize_release_tracker_event(event)
-                if normalized_event is not None:
-                    events_working.append(normalized_event)
-                    new_index = len(events_working) - 1
-                    if release_key:
-                        index_by_release_key[release_key] = new_index
-                    if conversation_id:
-                        index_by_thread_id[conversation_id] = new_index
-                    version_value = str(normalized_event.get("version") or "").strip().lower()
-                    if version_value and version_value != "n/a":
-                        index_by_version[version_value] = new_index
-                    existing_source_uids.add(source_uid)
-                    imported_count += 1
-                    events_changed = True
-
-            if mark_seen:
-                try:
-                    item.Unread = False
-                    item.Save()
-                except Exception:  # noqa: BLE001
-                    pass
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "imported": imported_count, "processed": processed_count, "message": str(exc)}
-    finally:
-        pythoncom.CoUninitialize()
-
-    with RELEASE_TRACKER_LOCK:
-        release_tracker_config["last_processed_at"] = (
-            latest_processed_at.isoformat() if latest_processed_at is not None else ""
-        )
-        release_tracker_config["last_run_at"] = datetime.now(timezone.utc).isoformat()
-        release_tracker_config["last_error"] = "; ".join(parse_errors[-4:]) if parse_errors else ""
-        if events_changed:
-            release_tracker_events[:] = events_working
-            release_tracker_events.sort(key=_release_sort_key, reverse=True)
-            del release_tracker_events[200:]
-
-    _save_release_tracker_config()
-    if events_changed:
-        _save_release_tracker_events()
-
-    return {
-        "ok": True,
-        "imported": imported_count,
-        "updated": updated_count,
-        "processed": processed_count,
-        "message": "Sync complete",
-    }
 
 
 def _sync_release_tracker_once(*, force: bool = False) -> dict[str, Any]:
     with RELEASE_TRACKER_LOCK:
         config = deepcopy(release_tracker_config)
         existing_events = [deepcopy(item) for item in release_tracker_events]
+        existing_targets = [deepcopy(item) for item in release_tracker_targets]
 
     if not config.get("is_enabled") and not force:
-        return {"ok": True, "imported": 0, "processed": 0, "message": "Release tracker disabled"}
+        return {"ok": True, "releases": len(existing_events), "processed": 0, "message": "Release tracker disabled"}
 
-    if str(config.get("provider") or "win32").lower() != "win32":
-        message = "Unsupported release tracker provider."
+    try:
+        updated_targets, updated_events, processed_count = _build_release_events_from_targets(existing_targets, existing_events)
+    except Exception as exc:  # noqa: BLE001
         with RELEASE_TRACKER_LOCK:
-            release_tracker_config["last_error"] = message
+            release_tracker_config["last_error"] = str(exc)
             release_tracker_config["last_run_at"] = datetime.now(timezone.utc).isoformat()
         _save_release_tracker_config()
-        return {"ok": False, "imported": 0, "processed": 0, "message": message}
+        return {"ok": False, "releases": 0, "processed": 0, "message": str(exc)}
 
-    result = _sync_release_tracker_win32(config, existing_events)
-    if not result.get("ok"):
-        with RELEASE_TRACKER_LOCK:
-            release_tracker_config["last_error"] = str(result.get("message") or "Unknown error")
-            release_tracker_config["last_run_at"] = datetime.now(timezone.utc).isoformat()
-        _save_release_tracker_config()
-    return result
+    with RELEASE_TRACKER_LOCK:
+        release_tracker_targets[:] = updated_targets
+        release_tracker_events[:] = updated_events
+        release_tracker_config["last_run_at"] = datetime.now(timezone.utc).isoformat()
+        release_tracker_config["last_error"] = ""
+
+    _save_release_tracker_targets()
+    _save_release_tracker_events()
+    _save_release_tracker_config()
+    return {
+        "ok": True,
+        "releases": len(updated_events),
+        "processed": processed_count,
+        "message": "Sync complete",
+    }
 
 
 def _find_server_health_check(check_id: str) -> tuple[int, dict[str, Any] | None]:
@@ -1769,6 +1676,7 @@ def _build_server_health_check_from_form(
 
 server_health_checks: list[dict[str, Any]] = _load_server_health_checks()
 release_tracker_config: dict[str, Any] = _load_release_tracker_config()
+release_tracker_targets: list[dict[str, Any]] = _load_release_tracker_targets()
 release_tracker_events: list[dict[str, Any]] = _load_release_tracker_events()
 
 
@@ -1839,17 +1747,6 @@ def _start_background_release_tracker() -> None:
             daemon=True,
         )
         _release_tracker_thread.start()
-
-
-def _win32_release_tracker_status() -> tuple[bool, str]:
-    if not _is_windows_platform():
-        return False, "Win32 release tracker requires Windows."
-    try:
-        import pythoncom  # type: ignore[import-not-found]
-        import win32com.client  # type: ignore[import-not-found]
-    except Exception as exc:  # noqa: BLE001
-        return False, f"pywin32 is not available: {exc}"
-    return True, ""
 
 
 @app.before_request
@@ -1938,34 +1835,28 @@ def releases() -> str:
     release_items = _build_release_view()
     with RELEASE_TRACKER_LOCK:
         tracker_snapshot = dict(release_tracker_config)
-
-    win32_ready, win32_status = _win32_release_tracker_status()
-    tracker_for_view = {
-        **tracker_snapshot,
-        "win32_ready": win32_ready,
-        "win32_status": win32_status,
-    }
+        targets_snapshot = [dict(item) for item in release_tracker_targets]
 
     notice_code = request.args.get("notice")
-    imported_count = _coerce_int(request.args.get("imported"), 0, 0, 1_000_000)
-    updated_count = _coerce_int(request.args.get("updated"), 0, 0, 1_000_000)
+    releases_count = _coerce_int(request.args.get("releases"), 0, 0, 1_000_000)
     processed_count = _coerce_int(request.args.get("processed"), 0, 0, 1_000_000)
+    added_count = _coerce_int(request.args.get("added"), 0, 0, 1_000_000)
+    skipped_count = _coerce_int(request.args.get("skipped"), 0, 0, 1_000_000)
     release_notice = ""
     if notice_code == "release-synced":
         release_notice = (
-            f"Release email sync complete. Processed {processed_count} email(s), "
-            f"imported {imported_count} new release item(s), updated {updated_count} existing release item(s)."
+            f"Release file scan complete. Checked {processed_count} path(s) and built {releases_count} tracked release item(s)."
         )
     elif notice_code == "release-sync-error":
-        release_notice = "Release email sync failed. Check tracker error details below."
+        release_notice = "Release file scan failed. Check tracker error details below."
     elif notice_code == "release-config-saved":
-        release_notice = "Release tracker configuration saved."
-    elif notice_code == "release-config-invalid":
-        release_notice = "Release tracker configuration is invalid. Please verify Win32 availability and required fields."
-    elif notice_code == "release-path-saved":
-        release_notice = "Release deployment path saved."
-    elif notice_code == "release-path-missing":
-        release_notice = "Release item not found."
+        release_notice = "Release file tracker configuration saved."
+    elif notice_code == "release-target-added":
+        release_notice = "Release file path added."
+    elif notice_code == "release-target-deleted":
+        release_notice = "Release file path removed."
+    elif notice_code == "release-target-bulk-added":
+        release_notice = f"Bulk file import complete. Added {added_count} path(s), skipped {skipped_count}."
 
     return render_template(
         "releases.html",
@@ -1973,7 +1864,9 @@ def releases() -> str:
         active_page="releases",
         releases=release_items,
         release_notice=release_notice,
-        release_tracker=tracker_for_view,
+        release_tracker=tracker_snapshot,
+        release_targets=targets_snapshot,
+        release_step_options=RELEASE_STEP_OPTIONS[1:],
         stats={
             "deployed": sum(item["status"] == "deployed" for item in release_items),
             "in_progress": sum(item["status"] == "in-progress" for item in release_items),
@@ -1988,26 +1881,15 @@ def update_release_tracker_config() -> Any:
         existing = dict(release_tracker_config)
 
     updated = dict(existing)
-    updated["provider"] = "win32"
+    updated["provider"] = "file_paths"
     updated["is_enabled"] = request.form.get("is_enabled") == "on"
-    updated["outlook_mailbox"] = str(request.form.get("outlook_mailbox", "")).strip()
-    updated["outlook_folder_path"] = str(request.form.get("outlook_folder_path", "Inbox")).strip() or "Inbox"
-    updated["subject_filter"] = str(request.form.get("subject_filter", "")).strip()
-    updated["sender_filter"] = str(request.form.get("sender_filter", "")).strip()
-    updated["only_unseen"] = request.form.get("only_unseen") == "on"
-    updated["mark_seen"] = request.form.get("mark_seen") == "on"
-    updated["only_newer_than_last_run"] = request.form.get("only_newer_than_last_run") == "on"
     updated["poll_interval_seconds"] = _coerce_int(request.form.get("poll_interval_seconds"), 180, 30, 86_400)
-
-    if updated["is_enabled"]:
-        win32_ready, _ = _win32_release_tracker_status()
-        if not win32_ready:
-            return redirect(url_for("releases", notice="release-config-invalid"))
 
     normalized = _normalize_release_tracker_config(updated)
     with RELEASE_TRACKER_LOCK:
         release_tracker_config.update(normalized)
     _save_release_tracker_config()
+    _sync_release_tracker_once(force=True)
 
     return redirect(url_for("releases", notice="release-config-saved"))
 
@@ -2020,30 +1902,91 @@ def sync_releases_now() -> Any:
             url_for(
                 "releases",
                 notice="release-synced",
-                imported=_coerce_int(result.get("imported"), 0, 0, 1_000_000),
-                updated=_coerce_int(result.get("updated"), 0, 0, 1_000_000),
+                releases=_coerce_int(result.get("releases"), 0, 0, 1_000_000),
                 processed=_coerce_int(result.get("processed"), 0, 0, 1_000_000),
             )
         )
     return redirect(url_for("releases", notice="release-sync-error"))
 
 
-@app.post("/releases/<release_id>/path")
-def update_release_path(release_id: str) -> Any:
-    deployment_file_path = str(request.form.get("deployment_file_path", "")).strip()
+@app.post("/config/releases/targets/add")
+def add_release_target() -> Any:
+    normalized = _normalize_release_tracker_target(
+        {
+            "file_path": str(request.form.get("file_path", "")).strip(),
+            "label": str(request.form.get("label", "")).strip(),
+            "release_key_override": str(request.form.get("release_key_override", "")).strip(),
+            "deployment_step_override": str(request.form.get("deployment_step_override", "")).strip().upper(),
+            "is_enabled": request.form.get("is_enabled") == "on",
+        }
+    )
+    if normalized is None:
+        return redirect(url_for("releases"))
+
     with RELEASE_TRACKER_LOCK:
-        for index, existing in enumerate(release_tracker_events):
-            if str(existing.get("id")) != release_id:
+        release_tracker_targets.append(normalized)
+    _save_release_tracker_targets()
+    _sync_release_tracker_once(force=True)
+    return redirect(url_for("releases", notice="release-target-added"))
+
+
+@app.post("/config/releases/targets/bulk-add")
+def bulk_add_release_targets() -> Any:
+    bulk_paths = str(request.form.get("bulk_paths", "")).strip()
+    if not bulk_paths:
+        return redirect(url_for("releases"))
+
+    added_count = 0
+    skipped_count = 0
+    new_targets: list[dict[str, Any]] = []
+    for line in bulk_paths.splitlines():
+        parsed = _parse_release_target_bulk_line(line)
+        if parsed is None:
+            if line.strip():
+                skipped_count += 1
+            continue
+        file_path, release_key_override, deployment_step_override, label = parsed
+        normalized = _normalize_release_tracker_target(
+            {
+                "file_path": file_path,
+                "label": label,
+                "release_key_override": release_key_override,
+                "deployment_step_override": deployment_step_override,
+                "is_enabled": True,
+            }
+        )
+        if normalized is None:
+            skipped_count += 1
+            continue
+        new_targets.append(normalized)
+        added_count += 1
+
+    with RELEASE_TRACKER_LOCK:
+        existing_paths = {str(item.get("file_path") or "").strip().lower() for item in release_tracker_targets}
+        for target in new_targets:
+            path_key = str(target.get("file_path") or "").strip().lower()
+            if path_key in existing_paths:
+                skipped_count += 1
+                added_count -= 1
                 continue
-            updated = dict(existing)
-            updated["deployment_file_path"] = deployment_file_path
-            normalized = _normalize_release_tracker_event(updated)
-            if normalized is None:
-                return redirect(url_for("releases", notice="release-path-missing"))
-            release_tracker_events[index] = normalized
-            _save_release_tracker_events()
-            return redirect(url_for("releases", notice="release-path-saved"))
-    return redirect(url_for("releases", notice="release-path-missing"))
+            release_tracker_targets.append(target)
+            existing_paths.add(path_key)
+
+    _save_release_tracker_targets()
+    _sync_release_tracker_once(force=True)
+    return redirect(url_for("releases", notice="release-target-bulk-added", added=added_count, skipped=skipped_count))
+
+
+@app.post("/config/releases/targets/<target_id>/delete")
+def delete_release_target(target_id: str) -> Any:
+    with RELEASE_TRACKER_LOCK:
+        remaining = [item for item in release_tracker_targets if str(item.get("id")) != target_id]
+        if len(remaining) == len(release_tracker_targets):
+            return redirect(url_for("releases"))
+        release_tracker_targets[:] = remaining
+    _save_release_tracker_targets()
+    _sync_release_tracker_once(force=True)
+    return redirect(url_for("releases", notice="release-target-deleted"))
 
 
 @app.get("/sla-payments")

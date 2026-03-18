@@ -9,26 +9,20 @@
 <section class="panel quick-config">
   <div>
     <h2 class="section-title">
-      <i data-lucide="mail-search"></i>
-      Release Email Ingestion
+      <i data-lucide="folder-search-2"></i>
+      Release File Tracker
     </h2>
     <p class="subtle">
-      Polls Outlook for deployment emails and imports them into the timeline.
+      Scans tracked release file locations and builds the current deployment timeline from the filesystem.
     </p>
     <div class="inline-stats">
       <span><b>{{ 'ON' if release_tracker.is_enabled else 'OFF' }}</b> tracker</span>
       <span><b>{{ release_tracker.poll_interval_seconds }}</b>s interval</span>
-      <span><b>{{ release_tracker.outlook_mailbox or 'Default mailbox' }}</b> mailbox</span>
-      <span><b>{{ release_tracker.outlook_folder_path }}</b> folder</span>
+      <span><b>{{ release_targets|length }}</b> tracked paths</span>
+      <span><b>{{ releases|length }}</b> tracked releases</span>
     </div>
-    {% if release_tracker.last_processed_at %}
-    <p class="subtle">Last processed email (UTC): <span class="mono">{{ release_tracker.last_processed_at }}</span></p>
-    {% endif %}
     {% if release_tracker.last_run_at %}
     <p class="subtle">Last run (UTC): <span class="mono">{{ release_tracker.last_run_at }}</span></p>
-    {% endif %}
-    {% if not release_tracker.win32_ready %}
-    <p class="subtle error-text">{{ release_tracker.win32_status }}</p>
     {% endif %}
     {% if release_tracker.last_error %}
     <p class="subtle error-text">{{ release_tracker.last_error }}</p>
@@ -38,7 +32,7 @@
     <form method="post" action="/releases/sync">
       <button type="submit" class="btn">
         <i data-lucide="refresh-cw"></i>
-        Sync Release Emails
+        Scan Release Files
       </button>
     </form>
   </div>
@@ -56,23 +50,7 @@
     <div class="form-grid cols-2">
       <label>
         <span>Provider</span>
-        <input value="Outlook Win32 (pywin32)" disabled />
-      </label>
-      <label>
-        <span>Outlook Mailbox <small>(optional display name)</small></span>
-        <input name="outlook_mailbox" placeholder="shared-mailbox@company.com" value="{{ release_tracker.outlook_mailbox }}" />
-      </label>
-      <label>
-        <span>Outlook Folder Path</span>
-        <input name="outlook_folder_path" placeholder="Inbox\\Deployments" value="{{ release_tracker.outlook_folder_path }}" />
-      </label>
-      <label>
-        <span>Email Sender Filter</span>
-        <input name="sender_filter" value="{{ release_tracker.sender_filter }}" placeholder="release-bot@company.com" />
-      </label>
-      <label>
-        <span>Email Subject Filter</span>
-        <input name="subject_filter" value="{{ release_tracker.subject_filter }}" placeholder="Deployment" />
+        <input value="Filesystem Paths" disabled />
       </label>
       <label>
         <span>Poll Interval (seconds)</span>
@@ -82,9 +60,6 @@
 
     <div class="checkbox-row">
       <label><input type="checkbox" name="is_enabled" {% if release_tracker.is_enabled %}checked{% endif %} /> Enable tracker</label>
-      <label><input type="checkbox" name="only_unseen" {% if release_tracker.only_unseen %}checked{% endif %} /> Only unread emails</label>
-      <label><input type="checkbox" name="mark_seen" {% if release_tracker.mark_seen %}checked{% endif %} /> Mark emails as seen after processing</label>
-      <label><input type="checkbox" name="only_newer_than_last_run" {% if release_tracker.only_newer_than_last_run %}checked{% endif %} /> Only emails newer than last run</label>
     </div>
 
     <div class="section-row">
@@ -94,6 +69,118 @@
       </button>
     </div>
   </form>
+</section>
+
+<section class="panel">
+  <div class="section-row">
+    <h2 class="section-title">
+      <i data-lucide="folder-plus"></i>
+      Add Release File
+    </h2>
+  </div>
+
+  <form method="post" action="/config/releases/targets/add" class="config-form">
+    <div class="form-grid cols-2">
+      <label class="full-width">
+        <span>File Location</span>
+        <input name="file_path" placeholder="C:\\deployments\\R26.2\\QA\\release.zip" required />
+      </label>
+      <label>
+        <span>Display Label <small>(optional)</small></span>
+        <input name="label" placeholder="R26.2 QA Package" />
+      </label>
+      <label>
+        <span>Release Key Override <small>(optional)</small></span>
+        <input name="release_key_override" placeholder="R26.2" />
+      </label>
+      <label>
+        <span>Deployment Step</span>
+        <select name="deployment_step_override" required>
+          <option value="" selected disabled>Select step</option>
+          {% for step in release_step_options %}
+          <option value="{{ step }}">{{ step }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+
+    <div class="checkbox-row">
+      <label><input type="checkbox" name="is_enabled" checked /> Enable path</label>
+    </div>
+
+    <div class="section-row">
+      <button type="submit" class="btn primary">
+        <i data-lucide="plus"></i>
+        Add File Path
+      </button>
+    </div>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="section-row">
+    <h2 class="section-title">
+      <i data-lucide="list-plus"></i>
+      Bulk Add File Paths
+    </h2>
+  </div>
+
+  <form method="post" action="/config/releases/targets/bulk-add" class="config-form">
+    <div class="form-grid">
+      <label class="full-width">
+        <span>One per line: <span class="mono">path[, release_key][, step][, label]</span></span>
+        <textarea name="bulk_paths" placeholder="C:\\deployments\\R26.2\\qa\\release.zip, R26.2, QA, R26.2 QA&#10;C:\\deployments\\R26.2\\prod\\release.zip, R26.2, PROD, R26.2 PROD"></textarea>
+      </label>
+    </div>
+
+    <div class="section-row">
+      <button type="submit" class="btn">
+        <i data-lucide="upload"></i>
+        Import File Paths
+      </button>
+    </div>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="section-row">
+    <h2 class="section-title">
+      <i data-lucide="files"></i>
+      Tracked File Paths
+    </h2>
+  </div>
+
+  <div class="list-stack">
+    {% if release_targets %}
+      {% for target in release_targets %}
+      <article class="list-row">
+        <div>
+          <div class="row-name">
+            <span class="status-dot {{ 'healthy' if target.exists else 'warning' }}"></span>
+            <strong>{{ target.label or target.file_path }}</strong>
+          </div>
+          <p class="subtle mono">{{ target.file_path }}</p>
+          <div class="inline-stats">
+            {% if target.release_key_override %}<span><b>{{ target.release_key_override }}</b> release</span>{% endif %}
+            {% if target.deployment_step_override %}<span><b>{{ target.deployment_step_override }}</b> step</span>{% endif %}
+            <span><b>{{ 'FOUND' if target.exists else 'MISSING' }}</b></span>
+            {% if target.last_modified_at %}<span><b>{{ target.last_modified_at }}</b> modified</span>{% endif %}
+          </div>
+        </div>
+        <div class="button-row compact">
+          <form method="post" action="/config/releases/targets/{{ target.id }}/delete">
+            <button type="submit" class="btn danger">
+              <i data-lucide="trash-2"></i>
+              Remove
+            </button>
+          </form>
+        </div>
+      </article>
+      {% endfor %}
+    {% else %}
+    <p class="subtle">No tracked file paths yet.</p>
+    {% endif %}
+  </div>
 </section>
 
 <section class="grid stats-grid cols-3">
@@ -151,26 +238,20 @@
       </div>
 
       <div class="grid release-meta cols-4">
+        {% if release.source_type == 'file_target' %}
+        <div><p>Source</p><b class="mono">{{ release.deployed_by }}</b></div>
+        <div><p>Last Changed</p><b class="mono">{{ release.deployed_at }}</b></div>
+        <div><p>Tracked Paths</p><b class="mono">{{ release.tracked_paths_count }}</b></div>
+        <div><p>Available Paths</p><b class="mono">{{ release.available_paths_count }}</b></div>
+        {% else %}
         <div><p>Deployed By</p><b class="mono">{{ release.deployed_by }}</b></div>
         <div><p>Time</p><b class="mono">{{ release.deployed_at }}</b></div>
         <div><p>Services</p><b class="mono">{{ release.services }} updated</b></div>
         <div><p>Commits</p><b class="mono">{{ release.commits }} changes</b></div>
+        {% endif %}
       </div>
       {% if release.deployment_file_path %}
-      <p class="release-path mono">Deployment file: {{ release.deployment_file_path }}</p>
-      {% elif release.source_uid %}
-      <p class="release-path mono">Deployment file: not set</p>
-      {% endif %}
-      {% if release.source_uid %}
-      <form method="post" action="/releases/{{ release.id }}/path" class="release-path-form">
-        <input
-          name="deployment_file_path"
-          class="release-path-input mono"
-          value="{{ release.deployment_file_path }}"
-          placeholder="Enter deployment file path"
-        />
-        <button type="submit" class="btn">Save Path</button>
-      </form>
+      <p class="release-path mono">Tracked path: {{ release.deployment_file_path }}</p>
       {% endif %}
 
       {% if release.status == 'in-progress' %}
