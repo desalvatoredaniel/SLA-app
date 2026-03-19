@@ -87,6 +87,13 @@
         <span>Poll Interval (seconds)</span>
         <input name="poll_interval_seconds" type="number" min="30" max="86400" value="{{ release_tracker.poll_interval_seconds }}" />
       </label>
+      <label class="full-width">
+        <span>Saved Release Email Signature <small>(HTML supported)</small></span>
+        <textarea
+          name="notification_signature_html"
+          placeholder="Paste the Outlook signature HTML you want to reuse for release notifications."
+        >{{ release_tracker.notification_signature_html or '' }}</textarea>
+      </label>
     </div>
 
     <div class="checkbox-row">

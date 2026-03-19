@@ -90,6 +90,7 @@ RELEASE_NOTIFICATION_TO_RECIPIENTS = (
     os.getenv("SLA_RELEASE_NOTIFICATION_TO_RECIPIENTS", os.getenv("SLA_RELEASE_NOTIFICATION_RECIPIENTS", "")).strip()
 )
 RELEASE_NOTIFICATION_CC_RECIPIENTS = os.getenv("SLA_RELEASE_NOTIFICATION_CC_RECIPIENTS", "").strip()
+RELEASE_NOTIFICATION_SIGNATURE_HTML = os.getenv("SLA_RELEASE_NOTIFICATION_SIGNATURE_HTML", "")
 
 RELEASE_TRACKER_DEFAULTS: dict[str, Any] = {
     "is_enabled": False,
@@ -98,6 +99,7 @@ RELEASE_TRACKER_DEFAULTS: dict[str, Any] = {
     "poll_interval_seconds": _env_int("SLA_RELEASE_POLL_INTERVAL_SECONDS", 180, 30, 86_400),
     "notification_to_recipients": RELEASE_NOTIFICATION_TO_RECIPIENTS,
     "notification_cc_recipients": RELEASE_NOTIFICATION_CC_RECIPIENTS,
+    "notification_signature_html": RELEASE_NOTIFICATION_SIGNATURE_HTML,
     "last_run_at": "",
     "last_error": "",
 }
@@ -598,6 +600,9 @@ def _normalize_release_tracker_config(raw: dict[str, Any]) -> dict[str, Any]:
         "notification_cc_recipients": str(
             raw.get("notification_cc_recipients") or RELEASE_TRACKER_DEFAULTS["notification_cc_recipients"]
         ).strip(),
+        "notification_signature_html": str(
+            raw.get("notification_signature_html") or RELEASE_TRACKER_DEFAULTS["notification_signature_html"]
+        ),
         "last_run_at": str(raw.get("last_run_at") or "").strip(),
         "last_error": str(raw.get("last_error") or "").strip(),
     }
@@ -2274,6 +2279,7 @@ def releases() -> str:
         release_notification_defaults={
             "to_recipients": str(tracker_snapshot.get("notification_to_recipients") or "").strip(),
             "cc_recipients": str(tracker_snapshot.get("notification_cc_recipients") or "").strip(),
+            "signature": str(tracker_snapshot.get("notification_signature_html") or ""),
             "subject_prefix": RELEASE_NOTIFICATION_SUBJECT_PREFIX,
         },
         stats={
@@ -2294,6 +2300,7 @@ def update_release_tracker_config() -> Any:
     updated["base_path"] = str(request.form.get("base_path", "")).strip()
     updated["is_enabled"] = request.form.get("is_enabled") == "on"
     updated["poll_interval_seconds"] = _coerce_int(request.form.get("poll_interval_seconds"), 180, 30, 86_400)
+    updated["notification_signature_html"] = str(request.form.get("notification_signature_html", ""))
 
     normalized = _normalize_release_tracker_config(updated)
     with RELEASE_TRACKER_LOCK:
