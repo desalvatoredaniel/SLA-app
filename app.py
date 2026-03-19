@@ -1273,6 +1273,63 @@ def _build_structured_release_notification_body(form_data: dict[str, str]) -> st
     return "\n".join(body_lines)
 
 
+def _looks_like_html(value: str) -> bool:
+    return bool(re.search(r"<[A-Za-z][^>]*>", str(value or "")))
+
+
+def _html_to_text(value: str) -> str:
+    raw = str(value or "")
+    raw = re.sub(r"(?i)<br\s*/?>", "\n", raw)
+    raw = re.sub(r"(?i)</p\s*>", "\n\n", raw)
+    raw = re.sub(r"(?i)</div\s*>", "\n", raw)
+    raw = re.sub(r"<[^>]+>", "", raw)
+    return html.unescape(raw).strip()
+
+
+def _htmlize_text_block(value: str) -> str:
+    escaped = html.escape(str(value or "").strip())
+    return escaped.replace("\n", "<br>")
+
+
+def _build_structured_release_notification_html(form_data: dict[str, str]) -> str:
+    release_numbers = _parse_release_numbers(str(form_data.get("release_numbers") or ""))
+    release_label = _human_join(release_numbers)
+    release_noun = "Release" if len(release_numbers) == 1 else "Releases"
+    change_number = str(form_data.get("change_number") or "").strip()
+    deployment_date = _format_notification_date(str(form_data.get("deployment_date") or ""))
+    start_time = _format_notification_time(str(form_data.get("start_time") or ""))
+    end_time = _format_notification_time(str(form_data.get("end_time") or ""))
+    signature = str(form_data.get("signature") or "").strip()
+    notes = str(form_data.get("notes") or "").strip()
+    team_name, service_name = _release_notification_scope_details(str(form_data.get("deployment_scope") or ""))
+
+    notes_html = ""
+    if notes:
+        notes_html = f"<p>{_htmlize_text_block(notes)}</p>"
+
+    if signature:
+        signature_html = signature if _looks_like_html(signature) else f"<p>{_htmlize_text_block(signature)}</p>"
+    else:
+        signature_html = ""
+
+    return (
+        "<html><body>"
+        "<p>Hello,</p>"
+        f"<p>We would like to notify you {html.escape(team_name)} will migrate "
+        f"{html.escape(release_noun)} {html.escape(release_label)} to the PROD environment on "
+        f"{html.escape(deployment_date)} between {html.escape(start_time)} - {html.escape(end_time)}.</p>"
+        f"<p>During this migration, the {html.escape(service_name)} will be temporarily offline, "
+        f"with services expected to resume by {html.escape(end_time)}.</p>"
+        "<p>This update addresses the ALM defect fixes detailed in the attached document. "
+        "User Acceptance Testing (UAT) has been successfully finalized by SLA.</p>"
+        "<p>Should you have any questions or concerns, please don't hesitate to reach out to us. Thank you!<br>"
+        f"Change Number : {html.escape(change_number)}</p>"
+        f"{notes_html}"
+        f"{signature_html}"
+        "</body></html>"
+    )
+
+
 def _sync_release_tracker_once(*, force: bool = False) -> dict[str, Any]:
     with RELEASE_TRACKER_LOCK:
         config = deepcopy(release_tracker_config)
@@ -2318,15 +2375,20 @@ def send_release_notification() -> Any:
     subject_release_prefix = "Release" if len(release_numbers) == 1 else "Releases"
     subject_release_value = ", ".join(release_numbers)
     subject = custom_subject or f"{subject_release_prefix} {subject_release_value}({subject_label}) - PROD release"
-    body = _build_structured_release_notification_body(
+    notification_payload = {
+        "release_numbers": ", ".join(release_numbers),
+        "change_number": change_number,
+        "deployment_scope": deployment_scope,
+        "deployment_date": deployment_date,
+        "start_time": start_time,
+        "end_time": end_time,
+        "notes": notes,
+        "signature": _html_to_text(signature) if _looks_like_html(signature) else signature,
+    }
+    body = _build_structured_release_notification_body(notification_payload)
+    html_body = _build_structured_release_notification_html(
         {
-            "release_numbers": ", ".join(release_numbers),
-            "change_number": change_number,
-            "deployment_scope": deployment_scope,
-            "deployment_date": deployment_date,
-            "start_time": start_time,
-            "end_time": end_time,
-            "notes": notes,
+            **notification_payload,
             "signature": signature,
         }
     )
@@ -2335,6 +2397,7 @@ def send_release_notification() -> Any:
         body,
         to_recipients,
         cc_recipients=cc_recipients,
+        html_body=html_body,
         attachments=attachment_payloads,
     )
     if not sent:
