@@ -42,6 +42,72 @@
 </section>
 
 <section class="panel">
+  <details class="group-collapsible" open>
+    <summary class="group-summary">
+      <div class="group-summary-left">
+        <span class="section-title">
+          <i data-lucide="hard-drive-download"></i>
+          Non-Prod Backup
+        </span>
+      </div>
+      <span class="group-summary-toggle">Toggle</span>
+    </summary>
+
+    <form method="post" action="/releases/backup" class="config-form">
+      <div class="form-grid cols-2">
+        <label>
+          <span>Backup Server</span>
+          <input value="{{ release_tracker.backup_host or '' }}" disabled />
+        </label>
+        <label>
+          <span>Backup Username</span>
+          <input value="{{ release_tracker.backup_username or '' }}" disabled />
+        </label>
+        <label class="full-width">
+          <span>Source Folder</span>
+          <input value="{{ release_tracker.backup_source_path or '' }}" disabled />
+        </label>
+        <label class="full-width">
+          <span>Backup Destination Root</span>
+          <input value="{{ release_tracker.backup_destination_path or '' }}" disabled />
+        </label>
+        <label class="full-width">
+          <span>Backup Label <small>(optional)</small></span>
+          <input name="backup_label" placeholder="R25-predeploy" />
+        </label>
+      </div>
+
+      <div class="inline-stats">
+        <span><b>{{ 'READY' if release_backup.is_ready else 'INCOMPLETE' }}</b> config</span>
+        <span><b>{{ 'YES' if release_backup.has_password else 'NO' }}</b> saved password</span>
+        <span><b>{{ 'YES' if release_backup.paramiko_available else 'NO' }}</b> paramiko</span>
+      </div>
+      {% if release_tracker.backup_last_run_at %}
+      <p class="subtle">Last backup run (UTC): <span class="mono">{{ release_tracker.backup_last_run_at }}</span></p>
+      {% endif %}
+      {% if release_tracker.backup_last_destination %}
+      <p class="subtle">Last backup destination: <span class="mono">{{ release_tracker.backup_last_destination }}</span></p>
+      {% endif %}
+      {% if release_tracker.backup_last_message %}
+      <p class="subtle {% if release_tracker.backup_last_status == 'error' %}error-text{% endif %}">{{ release_tracker.backup_last_message }}</p>
+      {% endif %}
+      <div class="section-row">
+        <div class="subtle">
+          Saves a timestamped copy of the configured non-prod source folder into the configured backup folder on the same server over SSH.
+          {% if not release_backup.paramiko_available %}
+          Paramiko is not installed in this environment yet.
+          {% endif %}
+        </div>
+        <button type="submit" class="btn primary" {% if not release_backup.is_ready %}disabled{% endif %}>
+          <i data-lucide="copy-plus"></i>
+          Run Backup
+        </button>
+      </div>
+    </form>
+  </details>
+</section>
+
+<section class="panel">
   <details class="group-collapsible">
     <summary class="group-summary">
       <div class="group-summary-left">

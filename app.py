@@ -6,9 +6,12 @@ import json
 import math
 import mimetypes
 import os
+import posixpath
 import re
+import shlex
 import smtplib
 import ssl
+import stat
 import threading
 from base64 import b64encode
 from copy import deepcopy
@@ -23,6 +26,11 @@ from urllib import request as urllib_request
 from uuid import uuid4
 
 from flask import Flask, jsonify, redirect, render_template, request, url_for
+
+try:
+    import paramiko
+except ImportError:
+    paramiko = None
 
 app = Flask(__name__)
 
@@ -91,6 +99,10 @@ RELEASE_NOTIFICATION_TO_RECIPIENTS = (
 )
 RELEASE_NOTIFICATION_CC_RECIPIENTS = os.getenv("SLA_RELEASE_NOTIFICATION_CC_RECIPIENTS", "").strip()
 RELEASE_NOTIFICATION_SIGNATURE_HTML = os.getenv("SLA_RELEASE_NOTIFICATION_SIGNATURE_HTML", "")
+RELEASE_BACKUP_PASSWORD_ENV_KEY = (
+    os.getenv("SLA_RELEASE_BACKUP_PASSWORD_ENV_KEY", "SLA_RELEASE_BACKUP_PASSWORD").strip()
+    or "SLA_RELEASE_BACKUP_PASSWORD"
+)
 
 RELEASE_TRACKER_DEFAULTS: dict[str, Any] = {
     "is_enabled": False,
@@ -100,6 +112,15 @@ RELEASE_TRACKER_DEFAULTS: dict[str, Any] = {
     "notification_to_recipients": RELEASE_NOTIFICATION_TO_RECIPIENTS,
     "notification_cc_recipients": RELEASE_NOTIFICATION_CC_RECIPIENTS,
     "notification_signature_html": RELEASE_NOTIFICATION_SIGNATURE_HTML,
+    "backup_host": os.getenv("SLA_RELEASE_BACKUP_HOST", "").strip(),
+    "backup_port": _env_int("SLA_RELEASE_BACKUP_PORT", 22, 1, 65_535),
+    "backup_username": os.getenv("SLA_RELEASE_BACKUP_USERNAME", "").strip(),
+    "backup_source_path": os.getenv("SLA_RELEASE_BACKUP_SOURCE_PATH", "").strip(),
+    "backup_destination_path": os.getenv("SLA_RELEASE_BACKUP_DESTINATION_PATH", "").strip(),
+    "backup_last_run_at": "",
+    "backup_last_status": "",
+    "backup_last_message": "",
+    "backup_last_destination": "",
     "last_run_at": "",
     "last_error": "",
 }
@@ -603,6 +624,17 @@ def _normalize_release_tracker_config(raw: dict[str, Any]) -> dict[str, Any]:
         "notification_signature_html": str(
             raw.get("notification_signature_html") or RELEASE_TRACKER_DEFAULTS["notification_signature_html"]
         ),
+        "backup_host": str(raw.get("backup_host") or RELEASE_TRACKER_DEFAULTS["backup_host"]).strip(),
+        "backup_port": _coerce_int(raw.get("backup_port"), int(RELEASE_TRACKER_DEFAULTS["backup_port"]), 1, 65_535),
+        "backup_username": str(raw.get("backup_username") or RELEASE_TRACKER_DEFAULTS["backup_username"]).strip(),
+        "backup_source_path": str(raw.get("backup_source_path") or RELEASE_TRACKER_DEFAULTS["backup_source_path"]).strip(),
+        "backup_destination_path": str(
+            raw.get("backup_destination_path") or RELEASE_TRACKER_DEFAULTS["backup_destination_path"]
+        ).strip(),
+        "backup_last_run_at": str(raw.get("backup_last_run_at") or "").strip(),
+        "backup_last_status": str(raw.get("backup_last_status") or "").strip(),
+        "backup_last_message": str(raw.get("backup_last_message") or "").strip(),
+        "backup_last_destination": str(raw.get("backup_last_destination") or "").strip(),
         "last_run_at": str(raw.get("last_run_at") or "").strip(),
         "last_error": str(raw.get("last_error") or "").strip(),
     }
@@ -636,6 +668,130 @@ def _save_release_notification_defaults(to_recipients_raw: str, cc_recipients_ra
         release_tracker_config["notification_to_recipients"] = to_recipients_raw.strip()
         release_tracker_config["notification_cc_recipients"] = cc_recipients_raw.strip()
     _save_release_tracker_config()
+
+
+def _release_backup_is_ready(config: dict[str, Any] | None = None) -> bool:
+    snapshot = dict(config or release_tracker_config)
+    return bool(
+        paramiko is not None
+        and str(snapshot.get("backup_host") or "").strip()
+        and str(snapshot.get("backup_username") or "").strip()
+        and str(snapshot.get("backup_source_path") or "").strip()
+        and str(snapshot.get("backup_destination_path") or "").strip()
+        and _has_secret(RELEASE_BACKUP_PASSWORD_ENV_KEY)
+    )
+
+
+def _sanitize_backup_label(value: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "").strip())
+    return normalized.strip("-._")[:80]
+
+
+def _normalize_remote_directory(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if raw == "/":
+        return raw
+    return raw.rstrip("/")
+
+
+def _remote_backup_folder_name(source_path: str, backup_label: str) -> str:
+    source_name = posixpath.basename(str(source_path or "").rstrip("/")) or "release"
+    safe_source = _sanitize_backup_label(source_name) or "release"
+    safe_label = _sanitize_backup_label(backup_label)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if safe_label:
+        return f"{safe_source}_{safe_label}_{timestamp}"
+    return f"{safe_source}_{timestamp}"
+
+
+def _record_release_backup_result(*, is_ok: bool, message: str, destination: str = "") -> None:
+    with RELEASE_TRACKER_LOCK:
+        release_tracker_config["backup_last_run_at"] = datetime.now(timezone.utc).isoformat()
+        release_tracker_config["backup_last_status"] = "success" if is_ok else "error"
+        release_tracker_config["backup_last_message"] = str(message or "").strip()
+        release_tracker_config["backup_last_destination"] = str(destination or "").strip()
+    _save_release_tracker_config()
+
+
+def _run_release_backup(*, backup_label: str = "") -> tuple[bool, str, str]:
+    with RELEASE_TRACKER_LOCK:
+        config = dict(release_tracker_config)
+
+    if paramiko is None:
+        return False, "", "SSH backup requires the Paramiko package. Install requirements first."
+
+    host = str(config.get("backup_host") or "").strip()
+    port = _coerce_int(config.get("backup_port"), 22, 1, 65_535)
+    username = str(config.get("backup_username") or "").strip()
+    source_path = _normalize_remote_directory(str(config.get("backup_source_path") or ""))
+    destination_root = _normalize_remote_directory(str(config.get("backup_destination_path") or ""))
+    password = _secret_from_env(RELEASE_BACKUP_PASSWORD_ENV_KEY)
+
+    if not host or not username or not password or not source_path or not destination_root:
+        return (
+            False,
+            "",
+            "SSH backup is not fully configured. Save host, username, password, source path, and destination path first.",
+        )
+
+    if destination_root == source_path or destination_root.startswith(f"{source_path}/"):
+        return False, "", "Backup destination cannot be the same as the source folder or live inside it."
+
+    destination_path = posixpath.join(destination_root, _remote_backup_folder_name(source_path, backup_label))
+    quoted_source = shlex.quote(source_path)
+    quoted_destination_root = shlex.quote(destination_root)
+    quoted_destination = shlex.quote(destination_path)
+    remote_command = (
+        f"mkdir -p {quoted_destination_root} && "
+        f"test -d {quoted_source} && "
+        f"test ! -e {quoted_destination} && "
+        f"mkdir -p {quoted_destination} && "
+        f"cp -a {quoted_source}/. {quoted_destination}/"
+    )
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    try:
+        client.connect(
+            hostname=host,
+            port=port,
+            username=username,
+            password=password,
+            timeout=20,
+            banner_timeout=20,
+            auth_timeout=20,
+        )
+        sftp = client.open_sftp()
+        try:
+            source_attrs = sftp.stat(source_path)
+        except OSError:
+            return False, "", f"Remote source path was not found: {source_path}"
+        if not stat.S_ISDIR(source_attrs.st_mode):
+            return False, "", f"Remote source path is not a folder: {source_path}"
+        stdin, stdout, stderr = client.exec_command(remote_command, timeout=180)
+        stdin.close()
+        exit_status = stdout.channel.recv_exit_status()
+        stderr_output = stderr.read().decode("utf-8", errors="replace").strip()
+        if exit_status != 0:
+            return False, "", stderr_output or "Remote backup command failed."
+        try:
+            destination_attrs = sftp.stat(destination_path)
+        except OSError:
+            return False, "", "Backup command completed but the destination folder could not be verified."
+        if not stat.S_ISDIR(destination_attrs.st_mode):
+            return False, "", "Backup destination exists but is not a folder."
+        return True, destination_path, f"Backup created at {destination_path}"
+    except Exception as exc:  # noqa: BLE001
+        return False, "", str(exc)
+    finally:
+        try:
+            sftp.close()
+        except Exception:  # noqa: BLE001
+            pass
+        client.close()
 
 
 def _normalize_release_tracker_target(raw: dict[str, Any]) -> dict[str, Any] | None:
@@ -2265,6 +2421,10 @@ def releases() -> str:
         release_notice = "Release notification email sent."
     elif notice_code == "release-notification-error":
         release_notice = notice_message or "Release notification email failed."
+    elif notice_code == "release-backup-complete":
+        release_notice = notice_message or "Non-prod backup completed."
+    elif notice_code == "release-backup-error":
+        release_notice = notice_message or "Non-prod backup failed."
 
     return render_template(
         "releases.html",
@@ -2281,6 +2441,11 @@ def releases() -> str:
             "cc_recipients": str(tracker_snapshot.get("notification_cc_recipients") or "").strip(),
             "signature": str(tracker_snapshot.get("notification_signature_html") or ""),
             "subject_prefix": RELEASE_NOTIFICATION_SUBJECT_PREFIX,
+        },
+        release_backup={
+            "is_ready": _release_backup_is_ready(tracker_snapshot),
+            "has_password": _has_secret(RELEASE_BACKUP_PASSWORD_ENV_KEY),
+            "paramiko_available": paramiko is not None,
         },
         stats={
             "qa": sum(1 for item in release_board if item["steps"].get("QA")),
@@ -2301,6 +2466,18 @@ def update_release_tracker_config() -> Any:
     updated["is_enabled"] = request.form.get("is_enabled") == "on"
     updated["poll_interval_seconds"] = _coerce_int(request.form.get("poll_interval_seconds"), 180, 30, 86_400)
     updated["notification_signature_html"] = str(request.form.get("notification_signature_html", ""))
+    updated["backup_host"] = str(request.form.get("backup_host", "")).strip()
+    updated["backup_port"] = _coerce_int(request.form.get("backup_port"), 22, 1, 65_535)
+    updated["backup_username"] = str(request.form.get("backup_username", "")).strip()
+    updated["backup_source_path"] = str(request.form.get("backup_source_path", "")).strip()
+    updated["backup_destination_path"] = str(request.form.get("backup_destination_path", "")).strip()
+
+    backup_password = str(request.form.get("backup_password", ""))
+    clear_backup_password = request.form.get("clear_backup_password") == "on"
+    if clear_backup_password:
+        _delete_env_value(RELEASE_BACKUP_PASSWORD_ENV_KEY)
+    elif backup_password:
+        _upsert_env_value(RELEASE_BACKUP_PASSWORD_ENV_KEY, backup_password)
 
     normalized = _normalize_release_tracker_config(updated)
     with RELEASE_TRACKER_LOCK:
@@ -2419,6 +2596,16 @@ def send_release_notification() -> Any:
     return redirect(url_for("releases", notice="release-notification-sent"))
 
 
+@app.post("/releases/backup")
+def run_release_backup() -> Any:
+    backup_label = str(request.form.get("backup_label", "")).strip()
+    backup_ok, destination_path, backup_message = _run_release_backup(backup_label=backup_label)
+    _record_release_backup_result(is_ok=backup_ok, message=backup_message, destination=destination_path)
+    if not backup_ok:
+        return redirect(url_for("releases", notice="release-backup-error", message=backup_message))
+    return redirect(url_for("releases", notice="release-backup-complete", message=backup_message))
+
+
 @app.post("/config/releases/targets/<target_id>/rename")
 def rename_release_target(target_id: str) -> Any:
     new_label = str(request.form.get("label", "")).strip()
@@ -2518,7 +2705,7 @@ def server_health_config() -> str:
         skipped=request.args.get("skipped"),
     )
     if not notice_text and notice_code == "release-config-saved":
-        notice_text = "Release folder tracker configuration saved."
+        notice_text = "Release tracker and backup configuration saved."
 
     return render_template(
         "config_server_health.html",
@@ -2536,6 +2723,12 @@ def server_health_config() -> str:
         health_check_interval_seconds=HEALTH_CHECK_INTERVAL_SECONDS,
         smtp_configured=_smtp_is_configured(),
         env_path=str(ENV_PATH),
+        release_backup={
+            "is_ready": _release_backup_is_ready(release_tracker_snapshot),
+            "has_password": _has_secret(RELEASE_BACKUP_PASSWORD_ENV_KEY),
+            "paramiko_available": paramiko is not None,
+            "password_env_key": RELEASE_BACKUP_PASSWORD_ENV_KEY,
+        },
     )
 
 

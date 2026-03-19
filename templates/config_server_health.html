@@ -53,7 +53,7 @@
         Release Tracker Config
       </h2>
       <p class="subtle">
-        Configure the folder tracker used by the Releases board.
+        Configure the folder tracker used by the Releases board and the SSH backup used before non-prod deployments.
       </p>
       {% if release_tracker.base_path %}
       <p class="subtle">Base path: <span class="mono">{{ release_tracker.base_path }}</span></p>
@@ -87,6 +87,34 @@
         <span>Poll Interval (seconds)</span>
         <input name="poll_interval_seconds" type="number" min="30" max="86400" value="{{ release_tracker.poll_interval_seconds }}" />
       </label>
+      <label>
+        <span>Backup Server</span>
+        <input name="backup_host" placeholder="nonprod-app01.internal" value="{{ release_tracker.backup_host or '' }}" />
+      </label>
+      <label>
+        <span>Backup SSH Port</span>
+        <input name="backup_port" type="number" min="1" max="65535" value="{{ release_tracker.backup_port or 22 }}" />
+      </label>
+      <label>
+        <span>Backup Username</span>
+        <input name="backup_username" placeholder="deploy-user" value="{{ release_tracker.backup_username or '' }}" />
+      </label>
+      <label>
+        <span>Backup Password</span>
+        <input
+          name="backup_password"
+          type="password"
+          placeholder="{% if release_backup.has_password %}Saved in {{ release_backup.password_env_key }}. Leave blank to keep it.{% else %}Enter the SSH password to save it.{% endif %}"
+        />
+      </label>
+      <label class="full-width">
+        <span>Remote Source Folder</span>
+        <input name="backup_source_path" placeholder="/opt/nonprod/current" value="{{ release_tracker.backup_source_path or '' }}" />
+      </label>
+      <label class="full-width">
+        <span>Remote Backup Destination Root</span>
+        <input name="backup_destination_path" placeholder="/opt/nonprod/backups" value="{{ release_tracker.backup_destination_path or '' }}" />
+      </label>
       <label class="full-width">
         <span>Saved Release Email Signature <small>(HTML supported)</small></span>
         <textarea
@@ -96,10 +124,29 @@
       </label>
     </div>
 
+    <div class="inline-stats">
+      <span><b>{{ 'READY' if release_backup.is_ready else 'INCOMPLETE' }}</b> SSH backup</span>
+      <span><b>{{ 'YES' if release_backup.has_password else 'NO' }}</b> saved password</span>
+      <span><b>{{ 'YES' if release_backup.paramiko_available else 'NO' }}</b> paramiko</span>
+    </div>
+    {% if release_tracker.backup_last_run_at %}
+    <p class="subtle">Last backup run (UTC): <span class="mono">{{ release_tracker.backup_last_run_at }}</span></p>
+    {% endif %}
+    {% if release_tracker.backup_last_destination %}
+    <p class="subtle">Last backup destination: <span class="mono">{{ release_tracker.backup_last_destination }}</span></p>
+    {% endif %}
+    {% if release_tracker.backup_last_message %}
+    <p class="subtle {% if release_tracker.backup_last_status == 'error' %}error-text{% endif %}">{{ release_tracker.backup_last_message }}</p>
+    {% endif %}
+
     <div class="checkbox-row">
       <label class="checkbox">
         <input type="checkbox" name="is_enabled" {% if release_tracker.is_enabled %}checked{% endif %} />
         Enable release tracker
+      </label>
+      <label class="checkbox">
+        <input type="checkbox" name="clear_backup_password" />
+        Clear saved backup password
       </label>
     </div>
 
