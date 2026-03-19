@@ -86,13 +86,18 @@ EMAIL_SUBJECT_PREFIX = os.getenv("SLA_ALERT_SUBJECT_PREFIX", "[SLA Server Health
 RELEASE_NOTIFICATION_SUBJECT_PREFIX = (
     os.getenv("SLA_RELEASE_NOTIFICATION_SUBJECT_PREFIX", "[Release Notification]").strip() or "[Release Notification]"
 )
-RELEASE_NOTIFICATION_RECIPIENTS = os.getenv("SLA_RELEASE_NOTIFICATION_RECIPIENTS", "").strip()
+RELEASE_NOTIFICATION_TO_RECIPIENTS = (
+    os.getenv("SLA_RELEASE_NOTIFICATION_TO_RECIPIENTS", os.getenv("SLA_RELEASE_NOTIFICATION_RECIPIENTS", "")).strip()
+)
+RELEASE_NOTIFICATION_CC_RECIPIENTS = os.getenv("SLA_RELEASE_NOTIFICATION_CC_RECIPIENTS", "").strip()
 
 RELEASE_TRACKER_DEFAULTS: dict[str, Any] = {
     "is_enabled": False,
     "provider": "file_paths",
     "base_path": os.getenv("SLA_RELEASE_BASE_PATH", "").strip(),
     "poll_interval_seconds": _env_int("SLA_RELEASE_POLL_INTERVAL_SECONDS", 180, 30, 86_400),
+    "notification_to_recipients": RELEASE_NOTIFICATION_TO_RECIPIENTS,
+    "notification_cc_recipients": RELEASE_NOTIFICATION_CC_RECIPIENTS,
     "last_run_at": "",
     "last_error": "",
 }
@@ -419,12 +424,15 @@ def _smtp_is_configured() -> bool:
 def _send_alert_email(
     subject: str,
     body: str,
-    recipients: list[str],
+    to_recipients: list[str],
     *,
+    cc_recipients: list[str] | None = None,
     html_body: str | None = None,
     attachments: list[dict[str, Any]] | None = None,
 ) -> tuple[bool, str]:
-    if not recipients:
+    cc_recipients = [recipient for recipient in (cc_recipients or []) if recipient]
+    all_recipients = [recipient for recipient in [*to_recipients, *cc_recipients] if recipient]
+    if not all_recipients:
         return False, "No recipients configured"
     if not _smtp_is_configured():
         return False, "SMTP is not configured"
@@ -432,7 +440,10 @@ def _send_alert_email(
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = SMTP_FROM
-    message["To"] = ", ".join(recipients)
+    if to_recipients:
+        message["To"] = ", ".join(to_recipients)
+    if cc_recipients:
+        message["Cc"] = ", ".join(cc_recipients)
     message.set_content(body)
     if html_body:
         message.add_alternative(html_body, subtype="html")
@@ -453,7 +464,7 @@ def _send_alert_email(
             with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20) as smtp:
                 if SMTP_USERNAME:
                     smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
-                smtp.send_message(message)
+                smtp.send_message(message, to_addrs=all_recipients)
         else:
             with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as smtp:
                 smtp.ehlo()
@@ -462,7 +473,7 @@ def _send_alert_email(
                     smtp.ehlo()
                 if SMTP_USERNAME:
                     smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
-                smtp.send_message(message)
+                smtp.send_message(message, to_addrs=all_recipients)
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)
 
@@ -581,6 +592,12 @@ def _normalize_release_tracker_config(raw: dict[str, Any]) -> dict[str, Any]:
             30,
             86_400,
         ),
+        "notification_to_recipients": str(
+            raw.get("notification_to_recipients") or RELEASE_TRACKER_DEFAULTS["notification_to_recipients"]
+        ).strip(),
+        "notification_cc_recipients": str(
+            raw.get("notification_cc_recipients") or RELEASE_TRACKER_DEFAULTS["notification_cc_recipients"]
+        ).strip(),
         "last_run_at": str(raw.get("last_run_at") or "").strip(),
         "last_error": str(raw.get("last_error") or "").strip(),
     }
@@ -607,6 +624,13 @@ def _save_release_tracker_config() -> None:
     with RELEASE_TRACKER_LOCK:
         payload = json.dumps(release_tracker_config, indent=2)
     RELEASE_TRACKER_CONFIG_PATH.write_text(payload, encoding="utf-8")
+
+
+def _save_release_notification_defaults(to_recipients_raw: str, cc_recipients_raw: str) -> None:
+    with RELEASE_TRACKER_LOCK:
+        release_tracker_config["notification_to_recipients"] = to_recipients_raw.strip()
+        release_tracker_config["notification_cc_recipients"] = cc_recipients_raw.strip()
+    _save_release_tracker_config()
 
 
 def _normalize_release_tracker_target(raw: dict[str, Any]) -> dict[str, Any] | None:
@@ -2191,7 +2215,8 @@ def releases() -> str:
         tracked_release_count=len(release_board),
         smtp_configured=_smtp_is_configured(),
         release_notification_defaults={
-            "recipients": RELEASE_NOTIFICATION_RECIPIENTS,
+            "to_recipients": str(tracker_snapshot.get("notification_to_recipients") or "").strip(),
+            "cc_recipients": str(tracker_snapshot.get("notification_cc_recipients") or "").strip(),
             "subject_prefix": RELEASE_NOTIFICATION_SUBJECT_PREFIX,
         },
         stats={
@@ -2239,7 +2264,8 @@ def sync_releases_now() -> Any:
 
 @app.post("/releases/notify")
 def send_release_notification() -> Any:
-    recipients_raw = str(request.form.get("recipients", "")).strip()
+    to_recipients_raw = str(request.form.get("to_recipients", request.form.get("recipients", ""))).strip()
+    cc_recipients_raw = str(request.form.get("cc_recipients", "")).strip()
     custom_subject = str(request.form.get("subject", "")).strip()
     release_numbers = _parse_release_numbers(str(request.form.get("release_numbers", "")).strip())
     change_number = str(request.form.get("change_number", "")).strip()
@@ -2249,11 +2275,12 @@ def send_release_notification() -> Any:
     end_time = str(request.form.get("end_time", "")).strip()
     notes = str(request.form.get("notes", "")).strip()
     signature = str(request.form.get("signature", "")).strip()
-    recipients = _parse_recipients(recipients_raw)
+    to_recipients = _parse_recipients(to_recipients_raw)
+    cc_recipients = _parse_recipients(cc_recipients_raw)
     uploaded_files = [item for item in request.files.getlist("attachments") if item and str(item.filename or "").strip()]
 
     if (
-        not recipients
+        not to_recipients
         or not release_numbers
         or not change_number
         or not deployment_date
@@ -2265,9 +2292,11 @@ def send_release_notification() -> Any:
             url_for(
                 "releases",
                 notice="release-notification-error",
-                message="Release number, change number, deployment type, date, time window, and recipients are required.",
+                message="Release number, change number, deployment type, date, time window, and To recipients are required.",
             )
         )
+
+    _save_release_notification_defaults(to_recipients_raw, cc_recipients_raw)
 
     attachment_payloads: list[dict[str, Any]] = []
     for item in uploaded_files:
@@ -2301,7 +2330,13 @@ def send_release_notification() -> Any:
             "signature": signature,
         }
     )
-    sent, send_error = _send_alert_email(subject, body, recipients, attachments=attachment_payloads)
+    sent, send_error = _send_alert_email(
+        subject,
+        body,
+        to_recipients,
+        cc_recipients=cc_recipients,
+        attachments=attachment_payloads,
+    )
     if not sent:
         return redirect(
             url_for(

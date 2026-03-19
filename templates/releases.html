@@ -85,12 +85,20 @@
         <input name="end_time" type="time" required />
       </label>
       <label>
-        <span>Recipients</span>
+        <span>To</span>
         <input
-          name="recipients"
-          value="{{ release_notification_defaults.recipients }}"
+          name="to_recipients"
+          value="{{ release_notification_defaults.to_recipients }}"
           placeholder="ops@example.com, qa@example.com"
           required
+        />
+      </label>
+      <label>
+        <span>CC <small>(optional)</small></span>
+        <input
+          name="cc_recipients"
+          value="{{ release_notification_defaults.cc_recipients }}"
+          placeholder="lead@example.com, manager@example.com"
         />
       </label>
       <label class="full-width">
