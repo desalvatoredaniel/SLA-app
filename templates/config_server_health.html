@@ -178,10 +178,12 @@
       <label class="full-width">
         <span>Remote Source Folder</span>
         <input name="source_path" placeholder="/opt/app/current" />
+        <small class="subtle">Optional for Test Connection. Required to save a backup target.</small>
       </label>
       <label class="full-width">
         <span>Remote Backup Destination Root</span>
         <input name="destination_path" placeholder="/opt/app/backups" />
+        <small class="subtle">Optional for Test Connection. Required to save a backup target.</small>
       </label>
     </div>
 
@@ -244,10 +246,12 @@
           <label class="full-width">
             <span>Remote Source Folder</span>
             <input name="source_path" value="{{ target.source_path }}" />
+            <small class="subtle">Leave blank only if you want to test SSH/SFTP login without checking folders.</small>
           </label>
           <label class="full-width">
             <span>Remote Backup Destination Root</span>
             <input name="destination_path" value="{{ target.destination_path }}" />
+            <small class="subtle">Leave blank only if you want to test SSH/SFTP login without checking folders.</small>
           </label>
         </div>
 

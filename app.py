@@ -968,10 +968,10 @@ def _test_release_backup_target_connection(target: dict[str, Any], *, password_o
     destination_root = _normalize_remote_directory(str(target.get("destination_path") or ""))
     password = password_override if password_override is not None else _secret_from_env(str(target.get("password_env_key") or ""))
 
-    if not host or not username or not password or not source_path or not destination_root:
-        return False, "Host, username, password, source path, and destination path are required for the SSH backup test."
+    if not host or not username or not password:
+        return False, "Host, username, and password are required for the SSH backup test."
 
-    if destination_root == source_path or destination_root.startswith(f"{source_path}/"):
+    if source_path and destination_root and (destination_root == source_path or destination_root.startswith(f"{source_path}/")):
         return False, "Backup destination cannot be the same as the source folder or live inside it."
 
     quoted_destination_root = shlex.quote(destination_root)
@@ -990,6 +990,9 @@ def _test_release_backup_target_connection(target: dict[str, Any], *, password_o
             auth_timeout=20,
         )
         sftp = client.open_sftp()
+        label = str(target.get("label") or target.get("host") or "target").strip()
+        if not source_path or not destination_root:
+            return True, f"SSH/SFTP connection passed for {label} on {host}:{port}. Folder paths were not checked."
         try:
             source_attrs = sftp.stat(source_path)
         except OSError:
@@ -1011,7 +1014,6 @@ def _test_release_backup_target_connection(target: dict[str, Any], *, password_o
         if not stat.S_ISDIR(destination_attrs.st_mode):
             return False, f"Connected, but the destination path is not a folder: {destination_root}"
 
-        label = str(target.get("label") or target.get("host") or "target").strip()
         return True, f"SSH backup connection passed for {label} on {host}:{port}."
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)
@@ -1864,6 +1866,29 @@ def _build_release_backup_target_from_form(form_data: Any, *, existing: dict[str
     normalized = _normalize_release_backup_target(current)
     if normalized is None:
         raise ValueError("Backup target is invalid")
+    return normalized
+
+
+def _build_release_backup_target_test_candidate(form_data: Any, *, existing: dict[str, Any] | None = None) -> dict[str, Any]:
+    current = dict(existing or {})
+    current["label"] = str(form_data.get("label", current.get("label", ""))).strip()
+    current["environment"] = _normalize_release_backup_environment(
+        form_data.get("environment", current.get("environment")),
+        str(current.get("environment") or "QA"),
+    )
+    current["host"] = str(form_data.get("host", current.get("host", ""))).strip()
+    current["port"] = _coerce_int(form_data.get("port"), int(current.get("port") or 22), 1, 65_535)
+    current["username"] = str(form_data.get("username", current.get("username", ""))).strip()
+    current["source_path"] = str(form_data.get("source_path", current.get("source_path", ""))).strip()
+    current["destination_path"] = str(form_data.get("destination_path", current.get("destination_path", ""))).strip()
+    current["is_enabled"] = form_data.get("is_enabled") == "on" if "is_enabled" in form_data else bool(current.get("is_enabled", True))
+
+    if not str(current.get("host") or "").strip() or not str(current.get("username") or "").strip():
+        raise ValueError("Backup target test requires host and username")
+
+    normalized = _normalize_release_backup_target(current)
+    if normalized is None:
+        raise ValueError("Backup target test is invalid")
     return normalized
 
 
@@ -2819,7 +2844,7 @@ def add_release_backup_target() -> Any:
 @app.post("/config/releases/backup-targets/test")
 def test_new_release_backup_target() -> Any:
     try:
-        target = _build_release_backup_target_from_form(request.form)
+        target = _build_release_backup_target_test_candidate(request.form)
     except ValueError:
         return redirect(url_for("server_health_config", notice="missing-required"))
 
@@ -2876,7 +2901,7 @@ def test_saved_release_backup_target(target_id: str) -> Any:
         return redirect(url_for("server_health_config", notice="release-backup-target-missing"))
 
     try:
-        target = _build_release_backup_target_from_form(request.form, existing=existing_target)
+        target = _build_release_backup_target_test_candidate(request.form, existing=existing_target)
     except ValueError:
         return redirect(url_for("server_health_config", notice="missing-required"))
 
