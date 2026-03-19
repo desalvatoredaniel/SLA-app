@@ -4,6 +4,7 @@ import ast
 import html
 import json
 import math
+import mimetypes
 import os
 import re
 import smtplib
@@ -415,7 +416,14 @@ def _smtp_is_configured() -> bool:
     return bool(SMTP_HOST and SMTP_FROM)
 
 
-def _send_alert_email(subject: str, body: str, recipients: list[str], *, html_body: str | None = None) -> tuple[bool, str]:
+def _send_alert_email(
+    subject: str,
+    body: str,
+    recipients: list[str],
+    *,
+    html_body: str | None = None,
+    attachments: list[dict[str, Any]] | None = None,
+) -> tuple[bool, str]:
     if not recipients:
         return False, "No recipients configured"
     if not _smtp_is_configured():
@@ -428,6 +436,17 @@ def _send_alert_email(subject: str, body: str, recipients: list[str], *, html_bo
     message.set_content(body)
     if html_body:
         message.add_alternative(html_body, subtype="html")
+    for attachment in attachments or []:
+        filename = str(attachment.get("filename") or "").strip()
+        content = attachment.get("content")
+        if not filename or not isinstance(content, (bytes, bytearray)):
+            continue
+        guessed_type, _ = mimetypes.guess_type(filename)
+        if guessed_type and "/" in guessed_type:
+            maintype, subtype = guessed_type.split("/", 1)
+        else:
+            maintype, subtype = "application", "octet-stream"
+        message.add_attachment(bytes(content), maintype=maintype, subtype=subtype, filename=filename)
 
     try:
         if SMTP_USE_SSL:
@@ -1119,6 +1138,84 @@ def _build_release_notification_body(release_entry: dict[str, Any], custom_messa
         lines.extend(["", "Notes:", custom_message])
 
     return "\n".join(lines)
+
+
+def _format_notification_date(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = date.fromisoformat(raw)
+    except ValueError:
+        return raw
+    return f"{parsed.month}/{parsed.day}"
+
+
+def _format_notification_time(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = datetime.strptime(raw, "%H:%M")
+    except ValueError:
+        return raw
+    hour = parsed.hour % 12 or 12
+    suffix = "AM" if parsed.hour < 12 else "PM"
+    if parsed.minute == 0:
+        return f"{hour} {suffix}"
+    return f"{hour}:{parsed.minute:02d} {suffix}"
+
+
+def _release_notification_scope_details(scope: str) -> tuple[str, str]:
+    normalized = str(scope or "").strip().lower()
+    if normalized == "portal":
+        return "Portal Deployment team", "Production SLA Portal"
+    if normalized == "both":
+        return "LEAP/Portal Deployment team", "Production SLA LEAP Back Office and Portal"
+    return "LEAP Deployment team", "Production SLA LEAP Back Office"
+
+
+def _release_notification_scope_subject_label(scope: str) -> str:
+    normalized = str(scope or "").strip().lower()
+    if normalized == "portal":
+        return "PORTAL"
+    if normalized == "both":
+        return "LEAP/PORTAL"
+    return "LEAP"
+
+
+def _build_structured_release_notification_body(form_data: dict[str, str]) -> str:
+    release_number = str(form_data.get("release_number") or "").strip()
+    change_number = str(form_data.get("change_number") or "").strip()
+    deployment_date = _format_notification_date(str(form_data.get("deployment_date") or ""))
+    start_time = _format_notification_time(str(form_data.get("start_time") or ""))
+    end_time = _format_notification_time(str(form_data.get("end_time") or ""))
+    signature = str(form_data.get("signature") or "").strip()
+    notes = str(form_data.get("notes") or "").strip()
+    team_name, service_name = _release_notification_scope_details(str(form_data.get("deployment_scope") or ""))
+
+    body_lines = [
+        "Hello,",
+        "",
+        (
+            f"We would like to notify you {team_name} will migrate Release {release_number} to the PROD environment on "
+            f"{deployment_date} between {start_time} - {end_time}."
+        ),
+        (
+            f"During this migration, the {service_name} will be temporarily offline, with services expected to resume by "
+            f"{end_time}."
+        ),
+        "This update addresses the ALM defect fixes detailed in the attached document.",
+        "User Acceptance Testing (UAT) has been successfully finalized by SLA.",
+        "",
+        "Should you have any questions or concerns, please don't hesitate to reach out to us. Thank you!",
+        f"Change Number : {change_number}",
+    ]
+    if notes:
+        body_lines.extend(["", notes])
+    if signature:
+        body_lines.extend(["", signature])
+    return "\n".join(body_lines)
 
 
 def _sync_release_tracker_once(*, force: bool = False) -> dict[str, Any]:
@@ -2111,39 +2208,67 @@ def sync_releases_now() -> Any:
 
 @app.post("/releases/notify")
 def send_release_notification() -> Any:
-    release_key = str(request.form.get("release_key", "")).strip()
     recipients_raw = str(request.form.get("recipients", "")).strip()
     custom_subject = str(request.form.get("subject", "")).strip()
-    custom_message = str(request.form.get("message", "")).strip()
+    release_number = str(request.form.get("release_number", "")).strip()
+    change_number = str(request.form.get("change_number", "")).strip()
+    deployment_scope = str(request.form.get("deployment_scope", "leap")).strip().lower()
+    deployment_date = str(request.form.get("deployment_date", "")).strip()
+    start_time = str(request.form.get("start_time", "")).strip()
+    end_time = str(request.form.get("end_time", "")).strip()
+    notes = str(request.form.get("notes", "")).strip()
+    signature = str(request.form.get("signature", "")).strip()
     recipients = _parse_recipients(recipients_raw)
+    uploaded_files = [item for item in request.files.getlist("attachments") if item and str(item.filename or "").strip()]
 
-    if not release_key or not recipients:
+    if (
+        not recipients
+        or not release_number
+        or not change_number
+        or not deployment_date
+        or not start_time
+        or not end_time
+        or deployment_scope not in {"leap", "portal", "both"}
+    ):
         return redirect(
             url_for(
                 "releases",
                 notice="release-notification-error",
-                message="Release and recipient list are required to send a notification.",
+                message="Release number, change number, deployment type, date, time window, and recipients are required.",
             )
         )
 
-    with RELEASE_TRACKER_LOCK:
-        release_items = _build_release_view()
-        targets_snapshot = [dict(item) for item in release_tracker_targets if bool(item.get("is_enabled", True))]
-    release_board = _build_release_board(release_items, targets_snapshot)
-    release_entry = _find_release_board_entry(release_board, release_key)
-    if release_entry is None:
-        return redirect(
-            url_for(
-                "releases",
-                notice="release-notification-error",
-                message="Selected release was not found on the board.",
+    attachment_payloads: list[dict[str, Any]] = []
+    for item in uploaded_files:
+        try:
+            content = item.read()
+        except OSError:
+            return redirect(
+                url_for(
+                    "releases",
+                    notice="release-notification-error",
+                    message=f"Could not read attachment {item.filename}.",
+                )
             )
-        )
+        if not content:
+            continue
+        attachment_payloads.append({"filename": str(item.filename).strip(), "content": content})
 
-    display_name = str(release_entry.get("display_name") or release_entry.get("release_key") or "Release").strip()
-    subject = custom_subject or f"{RELEASE_NOTIFICATION_SUBJECT_PREFIX} {display_name}"
-    body = _build_release_notification_body(release_entry, custom_message)
-    sent, send_error = _send_alert_email(subject, body, recipients)
+    subject_label = _release_notification_scope_subject_label(deployment_scope)
+    subject = custom_subject or f"Release {release_number}({subject_label}) - PROD release"
+    body = _build_structured_release_notification_body(
+        {
+            "release_number": release_number,
+            "change_number": change_number,
+            "deployment_scope": deployment_scope,
+            "deployment_date": deployment_date,
+            "start_time": start_time,
+            "end_time": end_time,
+            "notes": notes,
+            "signature": signature,
+        }
+    )
+    sent, send_error = _send_alert_email(subject, body, recipients, attachments=attachment_payloads)
     if not sent:
         return redirect(
             url_for(
