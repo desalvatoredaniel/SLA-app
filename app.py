@@ -1166,6 +1166,35 @@ def _format_notification_time(value: str) -> str:
     return f"{hour}:{parsed.minute:02d} {suffix}"
 
 
+def _parse_release_numbers(raw: str) -> list[str]:
+    if not raw:
+        return []
+    parts = re.split(r"[\n,;]+", raw)
+    values: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        value = str(part).strip()
+        if not value:
+            continue
+        normalized = value.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        values.append(value)
+    return values
+
+
+def _human_join(values: list[str]) -> str:
+    items = [str(value).strip() for value in values if str(value).strip()]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return f"{', '.join(items[:-1])}, and {items[-1]}"
+
+
 def _release_notification_scope_details(scope: str) -> tuple[str, str]:
     normalized = str(scope or "").strip().lower()
     if normalized == "portal":
@@ -1185,7 +1214,9 @@ def _release_notification_scope_subject_label(scope: str) -> str:
 
 
 def _build_structured_release_notification_body(form_data: dict[str, str]) -> str:
-    release_number = str(form_data.get("release_number") or "").strip()
+    release_numbers = _parse_release_numbers(str(form_data.get("release_numbers") or ""))
+    release_label = _human_join(release_numbers)
+    release_noun = "Release" if len(release_numbers) == 1 else "Releases"
     change_number = str(form_data.get("change_number") or "").strip()
     deployment_date = _format_notification_date(str(form_data.get("deployment_date") or ""))
     start_time = _format_notification_time(str(form_data.get("start_time") or ""))
@@ -1198,7 +1229,7 @@ def _build_structured_release_notification_body(form_data: dict[str, str]) -> st
         "Hello,",
         "",
         (
-            f"We would like to notify you {team_name} will migrate Release {release_number} to the PROD environment on "
+            f"We would like to notify you {team_name} will migrate {release_noun} {release_label} to the PROD environment on "
             f"{deployment_date} between {start_time} - {end_time}."
         ),
         (
@@ -2210,7 +2241,7 @@ def sync_releases_now() -> Any:
 def send_release_notification() -> Any:
     recipients_raw = str(request.form.get("recipients", "")).strip()
     custom_subject = str(request.form.get("subject", "")).strip()
-    release_number = str(request.form.get("release_number", "")).strip()
+    release_numbers = _parse_release_numbers(str(request.form.get("release_numbers", "")).strip())
     change_number = str(request.form.get("change_number", "")).strip()
     deployment_scope = str(request.form.get("deployment_scope", "leap")).strip().lower()
     deployment_date = str(request.form.get("deployment_date", "")).strip()
@@ -2223,7 +2254,7 @@ def send_release_notification() -> Any:
 
     if (
         not recipients
-        or not release_number
+        or not release_numbers
         or not change_number
         or not deployment_date
         or not start_time
@@ -2255,10 +2286,12 @@ def send_release_notification() -> Any:
         attachment_payloads.append({"filename": str(item.filename).strip(), "content": content})
 
     subject_label = _release_notification_scope_subject_label(deployment_scope)
-    subject = custom_subject or f"Release {release_number}({subject_label}) - PROD release"
+    subject_release_prefix = "Release" if len(release_numbers) == 1 else "Releases"
+    subject_release_value = ", ".join(release_numbers)
+    subject = custom_subject or f"{subject_release_prefix} {subject_release_value}({subject_label}) - PROD release"
     body = _build_structured_release_notification_body(
         {
-            "release_number": release_number,
+            "release_numbers": ", ".join(release_numbers),
             "change_number": change_number,
             "deployment_scope": deployment_scope,
             "deployment_date": deployment_date,

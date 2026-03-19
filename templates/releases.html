@@ -49,16 +49,40 @@
     </h2>
   </div>
 
-  <form method="post" action="/releases/notify" class="config-form">
+  <form method="post" action="/releases/notify" class="config-form" enctype="multipart/form-data">
     <div class="form-grid cols-2">
+      <label class="full-width">
+        <span>Release Numbers</span>
+        <textarea
+          name="release_numbers"
+          placeholder="R25, R25.1, R25.2"
+          required
+        ></textarea>
+        <small class="subtle">Use commas or new lines for multiple releases.</small>
+      </label>
       <label>
-        <span>Release</span>
-        <select name="release_key" required>
-          <option value="" selected disabled>Select release</option>
-          {% for release in release_board %}
-          <option value="{{ release.release_key }}">{{ release.display_name }}</option>
-          {% endfor %}
+        <span>Deployment Type</span>
+        <select name="deployment_scope" required>
+          <option value="leap" selected>SLA LEAP Back Office Deployment</option>
+          <option value="portal">SLA Portal Deployment</option>
+          <option value="both">SLA LEAP Back Office + Portal Deployment</option>
         </select>
+      </label>
+      <label>
+        <span>Change Number</span>
+        <input name="change_number" placeholder="CHG0607722" required />
+      </label>
+      <label>
+        <span>Deployment Date</span>
+        <input name="deployment_date" type="date" required />
+      </label>
+      <label>
+        <span>Start Time</span>
+        <input name="start_time" type="time" required />
+      </label>
+      <label>
+        <span>End Time</span>
+        <input name="end_time" type="time" required />
       </label>
       <label>
         <span>Recipients</span>
@@ -73,24 +97,32 @@
         <span>Subject <small>(optional)</small></span>
         <input
           name="subject"
-          placeholder="Release 25(LEAP) - PROD release"
+          placeholder="Releases R25, R25.1, R25.2(LEAP) - PROD release"
         />
       </label>
       <label class="full-width">
-        <span>Notes <small>(optional)</small></span>
-        <textarea name="message" placeholder="Optional rollout notes, links, or approval details."></textarea>
+        <span>Attachment List <small>(optional)</small></span>
+        <input name="attachments" type="file" multiple />
+      </label>
+      <label class="full-width">
+        <span>Additional Notes <small>(optional)</small></span>
+        <textarea name="notes" placeholder="Optional rollout notes, links, or extra deployment details."></textarea>
+      </label>
+      <label class="full-width">
+        <span>Signature <small>(optional)</small></span>
+        <textarea name="signature" placeholder="Paste your Outlook signature here."></textarea>
       </label>
     </div>
 
     <div class="section-row">
       <div class="subtle">
         {% if smtp_configured %}
-        Uses the configured SMTP settings to send a release status email from the current board.
+        Uses the configured SMTP settings to send a formatted PROD release notification with optional attachments.
         {% else %}
         SMTP is not configured yet. Add the SMTP env vars before sending release notifications.
         {% endif %}
       </div>
-      <button type="submit" class="btn primary" {% if not release_board or not smtp_configured %}disabled{% endif %}>
+      <button type="submit" class="btn primary" {% if not smtp_configured %}disabled{% endif %}>
         <i data-lucide="send"></i>
         Send Notification
       </button>
