@@ -1258,7 +1258,7 @@ def _build_structured_release_notification_body(form_data: dict[str, str]) -> st
         "Hello,",
         "",
         (
-            f"We would like to notify you {team_name} will migrate {release_noun} {release_label} to the PROD environment on "
+            f"We would like to notify you the {team_name} will migrate {release_noun} {release_label} to the PROD environment on "
             f"{deployment_date} between {start_time} - {end_time}."
         ),
         (
