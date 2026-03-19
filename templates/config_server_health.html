@@ -87,34 +87,6 @@
         <span>Poll Interval (seconds)</span>
         <input name="poll_interval_seconds" type="number" min="30" max="86400" value="{{ release_tracker.poll_interval_seconds }}" />
       </label>
-      <label>
-        <span>Backup Server</span>
-        <input name="backup_host" placeholder="nonprod-app01.internal" value="{{ release_tracker.backup_host or '' }}" />
-      </label>
-      <label>
-        <span>Backup SSH Port</span>
-        <input name="backup_port" type="number" min="1" max="65535" value="{{ release_tracker.backup_port or 22 }}" />
-      </label>
-      <label>
-        <span>Backup Username</span>
-        <input name="backup_username" placeholder="deploy-user" value="{{ release_tracker.backup_username or '' }}" />
-      </label>
-      <label>
-        <span>Backup Password</span>
-        <input
-          name="backup_password"
-          type="password"
-          placeholder="{% if release_backup.has_password %}Saved in {{ release_backup.password_env_key }}. Leave blank to keep it.{% else %}Enter the SSH password to save it.{% endif %}"
-        />
-      </label>
-      <label class="full-width">
-        <span>Remote Source Folder</span>
-        <input name="backup_source_path" placeholder="/opt/nonprod/current" value="{{ release_tracker.backup_source_path or '' }}" />
-      </label>
-      <label class="full-width">
-        <span>Remote Backup Destination Root</span>
-        <input name="backup_destination_path" placeholder="/opt/nonprod/backups" value="{{ release_tracker.backup_destination_path or '' }}" />
-      </label>
       <label class="full-width">
         <span>Saved Release Email Signature <small>(HTML supported)</small></span>
         <textarea
@@ -125,28 +97,15 @@
     </div>
 
     <div class="inline-stats">
-      <span><b>{{ 'READY' if release_backup.is_ready else 'INCOMPLETE' }}</b> SSH backup</span>
-      <span><b>{{ 'YES' if release_backup.has_password else 'NO' }}</b> saved password</span>
+      <span><b>{{ release_backup.configured_targets }}</b> backup targets</span>
+      <span><b>{{ release_backup.ready_targets }}</b> ready</span>
       <span><b>{{ 'YES' if release_backup.paramiko_available else 'NO' }}</b> paramiko</span>
     </div>
-    {% if release_tracker.backup_last_run_at %}
-    <p class="subtle">Last backup run (UTC): <span class="mono">{{ release_tracker.backup_last_run_at }}</span></p>
-    {% endif %}
-    {% if release_tracker.backup_last_destination %}
-    <p class="subtle">Last backup destination: <span class="mono">{{ release_tracker.backup_last_destination }}</span></p>
-    {% endif %}
-    {% if release_tracker.backup_last_message %}
-    <p class="subtle {% if release_tracker.backup_last_status == 'error' %}error-text{% endif %}">{{ release_tracker.backup_last_message }}</p>
-    {% endif %}
 
     <div class="checkbox-row">
       <label class="checkbox">
         <input type="checkbox" name="is_enabled" {% if release_tracker.is_enabled %}checked{% endif %} />
         Enable release tracker
-      </label>
-      <label class="checkbox">
-        <input type="checkbox" name="clear_backup_password" />
-        Clear saved backup password
       </label>
     </div>
 
@@ -157,6 +116,181 @@
       </button>
     </div>
   </form>
+</section>
+
+<section class="panel">
+  <div class="section-row">
+    <div>
+      <h2 class="section-title">
+        <i data-lucide="hard-drive-download"></i>
+        Release Backup Targets
+      </h2>
+      <p class="subtle">
+        Configure one SSH backup target per QA or STAGE server and folder pair. The Releases page can run one environment or all configured targets in a batch.
+      </p>
+      {% if release_backup.last_run_at %}
+      <p class="subtle">Last backup run (UTC): <span class="mono">{{ release_backup.last_run_at }}</span></p>
+      {% endif %}
+      {% if release_backup.last_destination %}
+      <p class="subtle">Recent destinations: <span class="mono">{{ release_backup.last_destination }}</span></p>
+      {% endif %}
+      {% if release_backup.last_message %}
+      <p class="subtle {% if release_backup.last_status == 'error' %}error-text{% endif %}">{{ release_backup.last_message }}</p>
+      {% endif %}
+    </div>
+    <div class="inline-stats">
+      <span><b>{{ release_backup.qa_targets }}</b> QA</span>
+      <span><b>{{ release_backup.stage_targets }}</b> STAGE</span>
+      <span><b>{{ release_backup.ready_targets }}</b> ready</span>
+      <span><b>{{ release_backup.enabled_targets }}</b> enabled</span>
+    </div>
+  </div>
+
+  <form method="post" action="/config/releases/backup-targets/add" class="config-form">
+    <div class="form-grid cols-2">
+      <label>
+        <span>Label <small>(optional)</small></span>
+        <input name="label" placeholder="QA Web 01" />
+      </label>
+      <label>
+        <span>Environment</span>
+        <select name="environment">
+          <option value="QA" selected>QA</option>
+          <option value="STAGE">STAGE</option>
+        </select>
+      </label>
+      <label>
+        <span>Host</span>
+        <input name="host" placeholder="qa-app01.internal" />
+      </label>
+      <label>
+        <span>SSH Port</span>
+        <input name="port" type="number" min="1" max="65535" value="22" />
+      </label>
+      <label>
+        <span>Username</span>
+        <input name="username" placeholder="deploy-user" />
+      </label>
+      <label>
+        <span>Password</span>
+        <input name="password" type="password" placeholder="Stored in .env using a generated key" />
+      </label>
+      <label class="full-width">
+        <span>Remote Source Folder</span>
+        <input name="source_path" placeholder="/opt/app/current" />
+      </label>
+      <label class="full-width">
+        <span>Remote Backup Destination Root</span>
+        <input name="destination_path" placeholder="/opt/app/backups" />
+      </label>
+    </div>
+
+    <div class="checkbox-row">
+      <label class="checkbox">
+        <input type="checkbox" name="is_enabled" checked />
+        Enabled
+      </label>
+    </div>
+
+    <div class="button-row">
+      <button class="btn primary" type="submit">
+        <i data-lucide="plus"></i>
+        Add Backup Target
+      </button>
+    </div>
+  </form>
+
+  {% if release_backup.targets %}
+  <div class="list-stack top-gap">
+    {% for target in release_backup.targets %}
+    <article class="list-row">
+      <form method="post" action="/config/releases/backup-targets/{{ target.id }}/update" class="config-form">
+        <div class="form-grid cols-2">
+          <label>
+            <span>Label</span>
+            <input name="label" value="{{ target.label }}" placeholder="QA Web 01" />
+          </label>
+          <label>
+            <span>Environment</span>
+            <select name="environment">
+              <option value="QA" {% if target.environment == 'QA' %}selected{% endif %}>QA</option>
+              <option value="STAGE" {% if target.environment == 'STAGE' %}selected{% endif %}>STAGE</option>
+            </select>
+          </label>
+          <label>
+            <span>Host</span>
+            <input name="host" value="{{ target.host }}" />
+          </label>
+          <label>
+            <span>SSH Port</span>
+            <input name="port" type="number" min="1" max="65535" value="{{ target.port }}" />
+          </label>
+          <label>
+            <span>Username</span>
+            <input name="username" value="{{ target.username }}" />
+          </label>
+          <label>
+            <span>Password</span>
+            <input
+              name="password"
+              type="password"
+              placeholder="{% if target.has_password %}Saved in {{ target.password_env_key }}. Leave blank to keep it.{% else %}Enter a password to save it in {{ target.password_env_key }}.{% endif %}"
+            />
+          </label>
+          <label class="full-width">
+            <span>Remote Source Folder</span>
+            <input name="source_path" value="{{ target.source_path }}" />
+          </label>
+          <label class="full-width">
+            <span>Remote Backup Destination Root</span>
+            <input name="destination_path" value="{{ target.destination_path }}" />
+          </label>
+        </div>
+
+        <div class="inline-stats">
+          <span><b>{{ 'ENABLED' if target.is_enabled else 'DISABLED' }}</b></span>
+          <span><b>{{ 'READY' if target.is_ready else 'INCOMPLETE' }}</b></span>
+          <span><b>{{ 'YES' if target.has_password else 'NO' }}</b> password</span>
+          <span><b>{{ target.password_env_key }}</b></span>
+          {% if target.last_run_at %}<span><b>{{ target.last_run_at }}</b> last run</span>{% endif %}
+        </div>
+        {% if target.last_destination %}
+        <p class="subtle">Last destination: <span class="mono">{{ target.last_destination }}</span></p>
+        {% endif %}
+        {% if target.last_message %}
+        <p class="subtle {% if target.last_status == 'error' %}error-text{% endif %}">{{ target.last_message }}</p>
+        {% endif %}
+
+        <div class="checkbox-row">
+          <label class="checkbox">
+            <input type="checkbox" name="is_enabled" {% if target.is_enabled %}checked{% endif %} />
+            Enabled
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" name="clear_password" />
+            Clear saved password
+          </label>
+        </div>
+
+        <div class="button-row">
+          <button class="btn primary" type="submit">
+            <i data-lucide="save"></i>
+            Save Target
+          </button>
+        </div>
+      </form>
+      <form method="post" action="/config/releases/backup-targets/{{ target.id }}/delete" onsubmit="return confirm('Delete this backup target?');">
+        <button class="btn danger" type="submit">
+          <i data-lucide="trash-2"></i>
+          Delete
+        </button>
+      </form>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="subtle top-gap">No release backup targets configured yet.</p>
+  {% endif %}
 </section>
 
 <section class="panel">

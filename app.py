@@ -112,6 +112,7 @@ RELEASE_TRACKER_DEFAULTS: dict[str, Any] = {
     "notification_to_recipients": RELEASE_NOTIFICATION_TO_RECIPIENTS,
     "notification_cc_recipients": RELEASE_NOTIFICATION_CC_RECIPIENTS,
     "notification_signature_html": RELEASE_NOTIFICATION_SIGNATURE_HTML,
+    "backup_targets": [],
     "backup_host": os.getenv("SLA_RELEASE_BACKUP_HOST", "").strip(),
     "backup_port": _env_int("SLA_RELEASE_BACKUP_PORT", 22, 1, 65_535),
     "backup_username": os.getenv("SLA_RELEASE_BACKUP_USERNAME", "").strip(),
@@ -126,6 +127,7 @@ RELEASE_TRACKER_DEFAULTS: dict[str, Any] = {
 }
 RELEASE_FOLDER_MAX_AGE = timedelta(days=365)
 RELEASE_STEP_OPTIONS = ("", "DEV", "QA", "STAGE", "PROD")
+RELEASE_BACKUP_ENV_OPTIONS = ("QA", "STAGE")
 
 SERVER_GROUP_OPTIONS = (
     "LEAP BO PROD",
@@ -378,6 +380,11 @@ def _secret_key_for(check_id: str, suffix: str) -> str:
     return f"SLA_SERVER_HEALTH_{sanitized_id}_{suffix}"
 
 
+def _secret_key_for_release_backup_target(target_id: str) -> str:
+    sanitized_id = re.sub(r"[^A-Za-z0-9]", "_", str(target_id or "")).upper() or "TARGET"
+    return f"SLA_RELEASE_BACKUP_{sanitized_id}_PASSWORD"
+
+
 def _normalize_server_group(raw: str | None) -> str:
     if not raw:
         return SERVER_GROUP_DEFAULT
@@ -604,6 +611,99 @@ def _save_server_health_checks() -> None:
     SERVER_HEALTH_CONFIG_PATH.write_text(payload, encoding="utf-8")
 
 
+def _normalize_release_backup_environment(value: Any, fallback: str = "QA") -> str:
+    normalized = str(value or "").strip().upper()
+    if normalized in RELEASE_BACKUP_ENV_OPTIONS:
+        return normalized
+    inferred = _infer_deployment_step(normalized)
+    if inferred in RELEASE_BACKUP_ENV_OPTIONS:
+        return inferred
+    return fallback
+
+
+def _normalize_release_backup_target(raw: dict[str, Any], *, fallback_index: int = 1) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+
+    target_id = str(raw.get("id") or uuid4().hex).strip() or uuid4().hex
+    host = str(raw.get("host") or raw.get("backup_host") or "").strip()
+    username = str(raw.get("username") or raw.get("backup_username") or "").strip()
+    source_path = str(raw.get("source_path") or raw.get("backup_source_path") or "").strip()
+    destination_path = str(raw.get("destination_path") or raw.get("backup_destination_path") or "").strip()
+    label = str(raw.get("label") or "").strip()
+    environment_value = raw.get("environment")
+    if not environment_value:
+        environment_value = _infer_deployment_step(f"{host} {source_path} {destination_path}")
+    environment = _normalize_release_backup_environment(environment_value, "QA")
+
+    if not any([host, username, source_path, destination_path, label, environment_value]):
+        return None
+
+    source_name = posixpath.basename(str(source_path).rstrip("/")) or f"target-{fallback_index}"
+    return {
+        "id": target_id,
+        "label": label or f"{environment} {source_name}",
+        "environment": environment,
+        "host": host,
+        "port": _coerce_int(raw.get("port") or raw.get("backup_port"), 22, 1, 65_535),
+        "username": username,
+        "source_path": source_path,
+        "destination_path": destination_path,
+        "password_env_key": str(raw.get("password_env_key") or _secret_key_for_release_backup_target(target_id)).strip()
+        or _secret_key_for_release_backup_target(target_id),
+        "is_enabled": bool(raw.get("is_enabled", True)),
+        "last_run_at": str(raw.get("last_run_at") or "").strip(),
+        "last_status": str(raw.get("last_status") or "").strip(),
+        "last_message": str(raw.get("last_message") or "").strip(),
+        "last_destination": str(raw.get("last_destination") or "").strip(),
+    }
+
+
+def _legacy_release_backup_target(raw: dict[str, Any]) -> dict[str, Any] | None:
+    legacy_host = str(raw.get("backup_host") or "").strip()
+    legacy_username = str(raw.get("backup_username") or "").strip()
+    legacy_source = str(raw.get("backup_source_path") or "").strip()
+    legacy_destination = str(raw.get("backup_destination_path") or "").strip()
+    if not any([legacy_host, legacy_username, legacy_source, legacy_destination]):
+        return None
+
+    return _normalize_release_backup_target(
+        {
+            "id": "legacy",
+            "label": str(raw.get("backup_label") or "").strip(),
+            "environment": _infer_deployment_step(f"{legacy_host} {legacy_source} {legacy_destination}"),
+            "host": legacy_host,
+            "port": raw.get("backup_port"),
+            "username": legacy_username,
+            "source_path": legacy_source,
+            "destination_path": legacy_destination,
+            "password_env_key": RELEASE_BACKUP_PASSWORD_ENV_KEY,
+            "is_enabled": True,
+            "last_run_at": raw.get("backup_last_run_at"),
+            "last_status": raw.get("backup_last_status"),
+            "last_message": raw.get("backup_last_message"),
+            "last_destination": raw.get("backup_last_destination"),
+        },
+        fallback_index=1,
+    )
+
+
+def _normalize_release_backup_targets(raw_targets: Any, legacy_source: dict[str, Any]) -> list[dict[str, Any]]:
+    targets: list[dict[str, Any]] = []
+
+    if isinstance(raw_targets, list):
+        for index, item in enumerate(raw_targets, start=1):
+            normalized = _normalize_release_backup_target(item, fallback_index=index)
+            if normalized is not None:
+                targets.append(normalized)
+        return targets
+
+    legacy_target = _legacy_release_backup_target(legacy_source)
+    if legacy_target is None:
+        return []
+    return [legacy_target]
+
+
 def _normalize_release_tracker_config(raw: dict[str, Any]) -> dict[str, Any]:
     return {
         "is_enabled": bool(raw.get("is_enabled", RELEASE_TRACKER_DEFAULTS["is_enabled"])),
@@ -624,6 +724,7 @@ def _normalize_release_tracker_config(raw: dict[str, Any]) -> dict[str, Any]:
         "notification_signature_html": str(
             raw.get("notification_signature_html") or RELEASE_TRACKER_DEFAULTS["notification_signature_html"]
         ),
+        "backup_targets": _normalize_release_backup_targets(raw.get("backup_targets"), raw),
         "backup_host": str(raw.get("backup_host") or RELEASE_TRACKER_DEFAULTS["backup_host"]).strip(),
         "backup_port": _coerce_int(raw.get("backup_port"), int(RELEASE_TRACKER_DEFAULTS["backup_port"]), 1, 65_535),
         "backup_username": str(raw.get("backup_username") or RELEASE_TRACKER_DEFAULTS["backup_username"]).strip(),
@@ -670,16 +771,64 @@ def _save_release_notification_defaults(to_recipients_raw: str, cc_recipients_ra
     _save_release_tracker_config()
 
 
-def _release_backup_is_ready(config: dict[str, Any] | None = None) -> bool:
-    snapshot = dict(config or release_tracker_config)
+def _release_backup_target_is_ready(target: dict[str, Any]) -> bool:
     return bool(
         paramiko is not None
-        and str(snapshot.get("backup_host") or "").strip()
-        and str(snapshot.get("backup_username") or "").strip()
-        and str(snapshot.get("backup_source_path") or "").strip()
-        and str(snapshot.get("backup_destination_path") or "").strip()
-        and _has_secret(RELEASE_BACKUP_PASSWORD_ENV_KEY)
+        and bool(target.get("is_enabled", True))
+        and str(target.get("host") or "").strip()
+        and str(target.get("username") or "").strip()
+        and str(target.get("source_path") or "").strip()
+        and str(target.get("destination_path") or "").strip()
+        and _has_secret(str(target.get("password_env_key") or ""))
     )
+
+
+def _build_release_backup_state(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    snapshot = dict(config or release_tracker_config)
+    raw_targets = snapshot.get("backup_targets")
+    targets_for_view: list[dict[str, Any]] = []
+    qa_targets = 0
+    stage_targets = 0
+    ready_targets = 0
+    enabled_targets = 0
+
+    if isinstance(raw_targets, list):
+        for target in raw_targets:
+            if not isinstance(target, dict):
+                continue
+            target_view = dict(target)
+            environment = _normalize_release_backup_environment(target_view.get("environment"), "QA")
+            target_view["environment"] = environment
+            target_view["has_password"] = _has_secret(str(target_view.get("password_env_key") or ""))
+            target_view["is_ready"] = _release_backup_target_is_ready(target_view)
+            targets_for_view.append(target_view)
+            if environment == "QA":
+                qa_targets += 1
+            elif environment == "STAGE":
+                stage_targets += 1
+            if bool(target_view.get("is_enabled", True)):
+                enabled_targets += 1
+                if target_view["is_ready"]:
+                    ready_targets += 1
+
+    return {
+        "targets": targets_for_view,
+        "configured_targets": len(targets_for_view),
+        "enabled_targets": enabled_targets,
+        "ready_targets": ready_targets,
+        "qa_targets": qa_targets,
+        "stage_targets": stage_targets,
+        "is_ready": ready_targets > 0,
+        "paramiko_available": paramiko is not None,
+        "last_run_at": str(snapshot.get("backup_last_run_at") or "").strip(),
+        "last_status": str(snapshot.get("backup_last_status") or "").strip(),
+        "last_message": str(snapshot.get("backup_last_message") or "").strip(),
+        "last_destination": str(snapshot.get("backup_last_destination") or "").strip(),
+    }
+
+
+def _release_backup_is_ready(config: dict[str, Any] | None = None) -> bool:
+    return bool(_build_release_backup_state(config).get("is_ready"))
 
 
 def _sanitize_backup_label(value: str) -> str:
@@ -706,34 +855,48 @@ def _remote_backup_folder_name(source_path: str, backup_label: str) -> str:
     return f"{safe_source}_{timestamp}"
 
 
-def _record_release_backup_result(*, is_ok: bool, message: str, destination: str = "") -> None:
+def _record_release_backup_batch_result(*, results: list[dict[str, Any]], summary_message: str, is_ok: bool) -> None:
+    recorded_at = datetime.now(timezone.utc).isoformat()
+    results_by_id = {str(item.get("id") or "").strip(): item for item in results if str(item.get("id") or "").strip()}
+    summary_destinations = [str(item.get("destination") or "").strip() for item in results if str(item.get("destination") or "").strip()]
+
     with RELEASE_TRACKER_LOCK:
-        release_tracker_config["backup_last_run_at"] = datetime.now(timezone.utc).isoformat()
+        updated_targets: list[dict[str, Any]] = []
+        for target in release_tracker_config.get("backup_targets") or []:
+            if not isinstance(target, dict):
+                continue
+            updated_target = dict(target)
+            result = results_by_id.get(str(updated_target.get("id") or "").strip())
+            if result is not None:
+                updated_target["last_run_at"] = recorded_at
+                updated_target["last_status"] = "success" if bool(result.get("ok")) else "error"
+                updated_target["last_message"] = str(result.get("message") or "").strip()
+                updated_target["last_destination"] = str(result.get("destination") or "").strip()
+            updated_targets.append(_normalize_release_backup_target(updated_target, fallback_index=len(updated_targets) + 1) or updated_target)
+        release_tracker_config["backup_targets"] = updated_targets
+        release_tracker_config["backup_last_run_at"] = recorded_at
         release_tracker_config["backup_last_status"] = "success" if is_ok else "error"
-        release_tracker_config["backup_last_message"] = str(message or "").strip()
-        release_tracker_config["backup_last_destination"] = str(destination or "").strip()
+        release_tracker_config["backup_last_message"] = str(summary_message or "").strip()
+        release_tracker_config["backup_last_destination"] = "; ".join(summary_destinations[:5])
     _save_release_tracker_config()
 
 
-def _run_release_backup(*, backup_label: str = "") -> tuple[bool, str, str]:
-    with RELEASE_TRACKER_LOCK:
-        config = dict(release_tracker_config)
-
+def _run_release_backup_target(target: dict[str, Any], *, backup_label: str = "") -> tuple[bool, str, str]:
     if paramiko is None:
         return False, "", "SSH backup requires the Paramiko package. Install requirements first."
 
-    host = str(config.get("backup_host") or "").strip()
-    port = _coerce_int(config.get("backup_port"), 22, 1, 65_535)
-    username = str(config.get("backup_username") or "").strip()
-    source_path = _normalize_remote_directory(str(config.get("backup_source_path") or ""))
-    destination_root = _normalize_remote_directory(str(config.get("backup_destination_path") or ""))
-    password = _secret_from_env(RELEASE_BACKUP_PASSWORD_ENV_KEY)
+    host = str(target.get("host") or "").strip()
+    port = _coerce_int(target.get("port"), 22, 1, 65_535)
+    username = str(target.get("username") or "").strip()
+    source_path = _normalize_remote_directory(str(target.get("source_path") or ""))
+    destination_root = _normalize_remote_directory(str(target.get("destination_path") or ""))
+    password = _secret_from_env(str(target.get("password_env_key") or ""))
 
     if not host or not username or not password or not source_path or not destination_root:
         return (
             False,
             "",
-            "SSH backup is not fully configured. Save host, username, password, source path, and destination path first.",
+            "Backup target is not fully configured. Save host, username, password, source path, and destination path first.",
         )
 
     if destination_root == source_path or destination_root.startswith(f"{source_path}/"):
@@ -792,6 +955,56 @@ def _run_release_backup(*, backup_label: str = "") -> tuple[bool, str, str]:
         except Exception:  # noqa: BLE001
             pass
         client.close()
+
+
+def _run_release_backups(*, environment: str, backup_label: str = "") -> tuple[bool, str, list[dict[str, Any]]]:
+    with RELEASE_TRACKER_LOCK:
+        configured_targets = [deepcopy(item) for item in release_tracker_config.get("backup_targets") or [] if isinstance(item, dict)]
+
+    selected_environment = str(environment or "all").strip().lower()
+    eligible_targets = [target for target in configured_targets if bool(target.get("is_enabled", True))]
+    if selected_environment in {"qa", "stage"}:
+        target_environment = selected_environment.upper()
+        eligible_targets = [target for target in eligible_targets if str(target.get("environment") or "").strip().upper() == target_environment]
+    else:
+        target_environment = "ALL"
+
+    if not eligible_targets:
+        if target_environment == "ALL":
+            return False, "No enabled backup targets are configured.", []
+        return False, f"No enabled {target_environment} backup targets are configured.", []
+
+    results: list[dict[str, Any]] = []
+    success_count = 0
+    for target in eligible_targets:
+        ok, destination, message = _run_release_backup_target(target, backup_label=backup_label)
+        results.append(
+            {
+                "id": str(target.get("id") or "").strip(),
+                "label": str(target.get("label") or "").strip() or str(target.get("host") or "").strip() or "Backup target",
+                "environment": str(target.get("environment") or "").strip().upper(),
+                "ok": ok,
+                "destination": destination,
+                "message": message,
+            }
+        )
+        if ok:
+            success_count += 1
+
+    failure_count = len(results) - success_count
+    scope_label = "ALL" if target_environment == "ALL" else target_environment
+    if len(results) == 1:
+        single = results[0]
+        prefix = f"{scope_label} backup" if target_environment != "ALL" else "Backup"
+        summary = f"{prefix} for {single['label']}: {single['message']}"
+        return bool(single["ok"]), summary, results
+
+    summary = f"{scope_label} backups finished. {success_count} succeeded, {failure_count} failed."
+    if failure_count:
+        failed_labels = ", ".join(item["label"] for item in results if not item["ok"])
+        if failed_labels:
+            summary = f"{summary} Failed: {failed_labels}."
+    return failure_count == 0, summary, results
 
 
 def _normalize_release_tracker_target(raw: dict[str, Any]) -> dict[str, Any] | None:
@@ -1555,6 +1768,38 @@ def _find_release_tracker_target(target_id: str) -> tuple[int, dict[str, Any] | 
     return -1, None
 
 
+def _find_release_backup_target(target_id: str, targets: list[dict[str, Any]]) -> tuple[int, dict[str, Any] | None]:
+    for index, target in enumerate(targets):
+        if str(target.get("id") or "").strip() == target_id:
+            return index, target
+    return -1, None
+
+
+def _build_release_backup_target_from_form(form_data: Any, *, existing: dict[str, Any] | None = None) -> dict[str, Any]:
+    current = dict(existing or {})
+    current["label"] = str(form_data.get("label", "")).strip()
+    current["environment"] = _normalize_release_backup_environment(form_data.get("environment"), "QA")
+    current["host"] = str(form_data.get("host", "")).strip()
+    current["port"] = _coerce_int(form_data.get("port"), int(current.get("port") or 22), 1, 65_535)
+    current["username"] = str(form_data.get("username", "")).strip()
+    current["source_path"] = str(form_data.get("source_path", "")).strip()
+    current["destination_path"] = str(form_data.get("destination_path", "")).strip()
+    current["is_enabled"] = form_data.get("is_enabled") == "on"
+
+    if (
+        not str(current.get("host") or "").strip()
+        or not str(current.get("username") or "").strip()
+        or not str(current.get("source_path") or "").strip()
+        or not str(current.get("destination_path") or "").strip()
+    ):
+        raise ValueError("Backup target requires host, username, source path, and destination path")
+
+    normalized = _normalize_release_backup_target(current)
+    if normalized is None:
+        raise ValueError("Backup target is invalid")
+    return normalized
+
+
 def _notice_text(notice_code: str | None, *, added: str | None = None, skipped: str | None = None) -> str:
     if not notice_code:
         return ""
@@ -1572,6 +1817,10 @@ def _notice_text(notice_code: str | None, *, added: str | None = None, skipped: 
         "added": "Health check target added.",
         "updated": "Health check target updated.",
         "deleted": "Health check target removed.",
+        "release-backup-target-added": "Release backup target added.",
+        "release-backup-target-updated": "Release backup target updated.",
+        "release-backup-target-deleted": "Release backup target removed.",
+        "release-backup-target-missing": "Release backup target was not found.",
         "bulk-empty": "Bulk upload is empty.",
         "bulk-invalid-alerts": "Bulk upload requires alert recipients when email alerts are enabled.",
         "tested-up": "Health check passed.",
@@ -2397,6 +2646,7 @@ def releases() -> str:
         tracker_snapshot = dict(release_tracker_config)
         targets_snapshot = [dict(item) for item in release_tracker_targets if bool(item.get("is_enabled", True))]
     release_board = _build_release_board(release_items, targets_snapshot)
+    release_backup_state = _build_release_backup_state(tracker_snapshot)
 
     notice_code = request.args.get("notice")
     notice_message = str(request.args.get("message") or "").strip()
@@ -2442,11 +2692,7 @@ def releases() -> str:
             "signature": str(tracker_snapshot.get("notification_signature_html") or ""),
             "subject_prefix": RELEASE_NOTIFICATION_SUBJECT_PREFIX,
         },
-        release_backup={
-            "is_ready": _release_backup_is_ready(tracker_snapshot),
-            "has_password": _has_secret(RELEASE_BACKUP_PASSWORD_ENV_KEY),
-            "paramiko_available": paramiko is not None,
-        },
+        release_backup=release_backup_state,
         stats={
             "qa": sum(1 for item in release_board if item["steps"].get("QA")),
             "stage": sum(1 for item in release_board if item["steps"].get("STAGE")),
@@ -2466,18 +2712,6 @@ def update_release_tracker_config() -> Any:
     updated["is_enabled"] = request.form.get("is_enabled") == "on"
     updated["poll_interval_seconds"] = _coerce_int(request.form.get("poll_interval_seconds"), 180, 30, 86_400)
     updated["notification_signature_html"] = str(request.form.get("notification_signature_html", ""))
-    updated["backup_host"] = str(request.form.get("backup_host", "")).strip()
-    updated["backup_port"] = _coerce_int(request.form.get("backup_port"), 22, 1, 65_535)
-    updated["backup_username"] = str(request.form.get("backup_username", "")).strip()
-    updated["backup_source_path"] = str(request.form.get("backup_source_path", "")).strip()
-    updated["backup_destination_path"] = str(request.form.get("backup_destination_path", "")).strip()
-
-    backup_password = str(request.form.get("backup_password", ""))
-    clear_backup_password = request.form.get("clear_backup_password") == "on"
-    if clear_backup_password:
-        _delete_env_value(RELEASE_BACKUP_PASSWORD_ENV_KEY)
-    elif backup_password:
-        _upsert_env_value(RELEASE_BACKUP_PASSWORD_ENV_KEY, backup_password)
 
     normalized = _normalize_release_tracker_config(updated)
     with RELEASE_TRACKER_LOCK:
@@ -2486,6 +2720,86 @@ def update_release_tracker_config() -> Any:
     _sync_release_tracker_once(force=True)
 
     return redirect(url_for("server_health_config", notice="release-config-saved"))
+
+
+@app.post("/config/releases/backup-targets/add")
+def add_release_backup_target() -> Any:
+    with RELEASE_TRACKER_LOCK:
+        existing_targets = [deepcopy(item) for item in release_tracker_config.get("backup_targets") or [] if isinstance(item, dict)]
+
+    try:
+        new_target = _build_release_backup_target_from_form(request.form)
+    except ValueError:
+        return redirect(url_for("server_health_config", notice="missing-required"))
+
+    backup_password = str(request.form.get("password", ""))
+    if backup_password:
+        _upsert_env_value(str(new_target.get("password_env_key") or ""), backup_password)
+
+    existing_targets.append(new_target)
+    with RELEASE_TRACKER_LOCK:
+        release_tracker_config["backup_targets"] = [
+            _normalize_release_backup_target(item, fallback_index=index)
+            for index, item in enumerate(existing_targets, start=1)
+            if _normalize_release_backup_target(item, fallback_index=index) is not None
+        ]
+    _save_release_tracker_config()
+    return redirect(url_for("server_health_config", notice="release-backup-target-added"))
+
+
+@app.post("/config/releases/backup-targets/<target_id>/update")
+def update_release_backup_target(target_id: str) -> Any:
+    with RELEASE_TRACKER_LOCK:
+        existing_targets = [deepcopy(item) for item in release_tracker_config.get("backup_targets") or [] if isinstance(item, dict)]
+    index, existing_target = _find_release_backup_target(target_id, existing_targets)
+    if existing_target is None:
+        return redirect(url_for("server_health_config", notice="release-backup-target-missing"))
+
+    try:
+        updated_target = _build_release_backup_target_from_form(request.form, existing=existing_target)
+    except ValueError:
+        return redirect(url_for("server_health_config", notice="missing-required"))
+
+    clear_password = request.form.get("clear_password") == "on"
+    password_value = str(request.form.get("password", ""))
+    password_env_key = str(updated_target.get("password_env_key") or "")
+    if clear_password:
+        _delete_env_value(password_env_key)
+    elif password_value:
+        _upsert_env_value(password_env_key, password_value)
+
+    existing_targets[index] = updated_target
+    with RELEASE_TRACKER_LOCK:
+        release_tracker_config["backup_targets"] = [
+            _normalize_release_backup_target(item, fallback_index=position)
+            for position, item in enumerate(existing_targets, start=1)
+            if _normalize_release_backup_target(item, fallback_index=position) is not None
+        ]
+    _save_release_tracker_config()
+    return redirect(url_for("server_health_config", notice="release-backup-target-updated"))
+
+
+@app.post("/config/releases/backup-targets/<target_id>/delete")
+def delete_release_backup_target(target_id: str) -> Any:
+    with RELEASE_TRACKER_LOCK:
+        existing_targets = [deepcopy(item) for item in release_tracker_config.get("backup_targets") or [] if isinstance(item, dict)]
+    index, existing_target = _find_release_backup_target(target_id, existing_targets)
+    if existing_target is None:
+        return redirect(url_for("server_health_config", notice="release-backup-target-missing"))
+
+    password_env_key = str(existing_target.get("password_env_key") or "")
+    if password_env_key:
+        _delete_env_value(password_env_key)
+
+    del existing_targets[index]
+    with RELEASE_TRACKER_LOCK:
+        release_tracker_config["backup_targets"] = [
+            _normalize_release_backup_target(item, fallback_index=position)
+            for position, item in enumerate(existing_targets, start=1)
+            if _normalize_release_backup_target(item, fallback_index=position) is not None
+        ]
+    _save_release_tracker_config()
+    return redirect(url_for("server_health_config", notice="release-backup-target-deleted"))
 
 
 @app.post("/releases/sync")
@@ -2598,9 +2912,10 @@ def send_release_notification() -> Any:
 
 @app.post("/releases/backup")
 def run_release_backup() -> Any:
+    backup_scope = str(request.form.get("backup_scope", "all")).strip().lower()
     backup_label = str(request.form.get("backup_label", "")).strip()
-    backup_ok, destination_path, backup_message = _run_release_backup(backup_label=backup_label)
-    _record_release_backup_result(is_ok=backup_ok, message=backup_message, destination=destination_path)
+    backup_ok, backup_message, backup_results = _run_release_backups(environment=backup_scope, backup_label=backup_label)
+    _record_release_backup_batch_result(results=backup_results, summary_message=backup_message, is_ok=backup_ok)
     if not backup_ok:
         return redirect(url_for("releases", notice="release-backup-error", message=backup_message))
     return redirect(url_for("releases", notice="release-backup-complete", message=backup_message))
@@ -2688,6 +3003,7 @@ def server_health_config() -> str:
     with RELEASE_TRACKER_LOCK:
         release_tracker_snapshot = dict(release_tracker_config)
         release_targets_snapshot = [dict(item) for item in release_tracker_targets if bool(item.get("is_enabled", True))]
+    release_backup_state = _build_release_backup_state(release_tracker_snapshot)
 
     for check in checks_snapshot:
         checks_for_view.append(
@@ -2723,12 +3039,7 @@ def server_health_config() -> str:
         health_check_interval_seconds=HEALTH_CHECK_INTERVAL_SECONDS,
         smtp_configured=_smtp_is_configured(),
         env_path=str(ENV_PATH),
-        release_backup={
-            "is_ready": _release_backup_is_ready(release_tracker_snapshot),
-            "has_password": _has_secret(RELEASE_BACKUP_PASSWORD_ENV_KEY),
-            "paramiko_available": paramiko is not None,
-            "password_env_key": RELEASE_BACKUP_PASSWORD_ENV_KEY,
-        },
+        release_backup=release_backup_state,
     )
 
 

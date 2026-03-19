@@ -56,22 +56,14 @@
     <form method="post" action="/releases/backup" class="config-form">
       <div class="form-grid cols-2">
         <label>
-          <span>Backup Server</span>
-          <input value="{{ release_tracker.backup_host or '' }}" disabled />
+          <span>Run For</span>
+          <select name="backup_scope">
+            <option value="all" selected>All non-prod targets</option>
+            <option value="qa">QA only</option>
+            <option value="stage">STAGE only</option>
+          </select>
         </label>
         <label>
-          <span>Backup Username</span>
-          <input value="{{ release_tracker.backup_username or '' }}" disabled />
-        </label>
-        <label class="full-width">
-          <span>Source Folder</span>
-          <input value="{{ release_tracker.backup_source_path or '' }}" disabled />
-        </label>
-        <label class="full-width">
-          <span>Backup Destination Root</span>
-          <input value="{{ release_tracker.backup_destination_path or '' }}" disabled />
-        </label>
-        <label class="full-width">
           <span>Backup Label <small>(optional)</small></span>
           <input name="backup_label" placeholder="R25-predeploy" />
         </label>
@@ -79,21 +71,54 @@
 
       <div class="inline-stats">
         <span><b>{{ 'READY' if release_backup.is_ready else 'INCOMPLETE' }}</b> config</span>
-        <span><b>{{ 'YES' if release_backup.has_password else 'NO' }}</b> saved password</span>
+        <span><b>{{ release_backup.configured_targets }}</b> targets</span>
+        <span><b>{{ release_backup.ready_targets }}</b> ready</span>
+        <span><b>{{ release_backup.qa_targets }}</b> QA</span>
+        <span><b>{{ release_backup.stage_targets }}</b> STAGE</span>
         <span><b>{{ 'YES' if release_backup.paramiko_available else 'NO' }}</b> paramiko</span>
       </div>
-      {% if release_tracker.backup_last_run_at %}
-      <p class="subtle">Last backup run (UTC): <span class="mono">{{ release_tracker.backup_last_run_at }}</span></p>
+      {% if release_backup.last_run_at %}
+      <p class="subtle">Last backup run (UTC): <span class="mono">{{ release_backup.last_run_at }}</span></p>
       {% endif %}
-      {% if release_tracker.backup_last_destination %}
-      <p class="subtle">Last backup destination: <span class="mono">{{ release_tracker.backup_last_destination }}</span></p>
+      {% if release_backup.last_destination %}
+      <p class="subtle">Recent destinations: <span class="mono">{{ release_backup.last_destination }}</span></p>
       {% endif %}
-      {% if release_tracker.backup_last_message %}
-      <p class="subtle {% if release_tracker.backup_last_status == 'error' %}error-text{% endif %}">{{ release_tracker.backup_last_message }}</p>
+      {% if release_backup.last_message %}
+      <p class="subtle {% if release_backup.last_status == 'error' %}error-text{% endif %}">{{ release_backup.last_message }}</p>
+      {% endif %}
+      {% if release_backup.targets %}
+      <div class="list-stack top-gap">
+        {% for target in release_backup.targets %}
+        <article class="list-row">
+          <div>
+            <div class="row-name">
+              <span class="status-dot {{ 'healthy' if target.is_ready else 'warning' }}"></span>
+              <strong>{{ target.label }}</strong>
+              <span class="token">{{ target.environment }}</span>
+              {% if not target.is_enabled %}
+              <span class="token">DISABLED</span>
+              {% endif %}
+            </div>
+            <p class="subtle mono">{{ target.username }}@{{ target.host }}:{{ target.port }}</p>
+            <div class="inline-stats">
+              <span><b>SRC</b> {{ target.source_path }}</span>
+              <span><b>DEST</b> {{ target.destination_path }}</span>
+              <span><b>{{ 'YES' if target.has_password else 'NO' }}</b> password</span>
+              <span><b>{{ 'READY' if target.is_ready else 'INCOMPLETE' }}</b></span>
+            </div>
+            {% if target.last_message %}
+            <p class="subtle {% if target.last_status == 'error' %}error-text{% endif %}">{{ target.last_message }}</p>
+            {% endif %}
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="subtle top-gap">No backup targets are configured yet. Add them in Config.</p>
       {% endif %}
       <div class="section-row">
         <div class="subtle">
-          Saves a timestamped copy of the configured non-prod source folder into the configured backup folder on the same server over SSH.
+          Runs a timestamped `cp -a` backup on every enabled target in the selected scope, copying the configured source folder into that target's backup destination on the same server over SSH.
           {% if not release_backup.paramiko_available %}
           Paramiko is not installed in this environment yet.
           {% endif %}
