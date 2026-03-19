@@ -957,6 +957,73 @@ def _run_release_backup_target(target: dict[str, Any], *, backup_label: str = ""
         client.close()
 
 
+def _test_release_backup_target_connection(target: dict[str, Any], *, password_override: str | None = None) -> tuple[bool, str]:
+    if paramiko is None:
+        return False, "SSH backup requires the Paramiko package. Install requirements first."
+
+    host = str(target.get("host") or "").strip()
+    port = _coerce_int(target.get("port"), 22, 1, 65_535)
+    username = str(target.get("username") or "").strip()
+    source_path = _normalize_remote_directory(str(target.get("source_path") or ""))
+    destination_root = _normalize_remote_directory(str(target.get("destination_path") or ""))
+    password = password_override if password_override is not None else _secret_from_env(str(target.get("password_env_key") or ""))
+
+    if not host or not username or not password or not source_path or not destination_root:
+        return False, "Host, username, password, source path, and destination path are required for the SSH backup test."
+
+    if destination_root == source_path or destination_root.startswith(f"{source_path}/"):
+        return False, "Backup destination cannot be the same as the source folder or live inside it."
+
+    quoted_destination_root = shlex.quote(destination_root)
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    sftp = None
+
+    try:
+        client.connect(
+            hostname=host,
+            port=port,
+            username=username,
+            password=password,
+            timeout=20,
+            banner_timeout=20,
+            auth_timeout=20,
+        )
+        sftp = client.open_sftp()
+        try:
+            source_attrs = sftp.stat(source_path)
+        except OSError:
+            return False, f"Connected, but the remote source path was not found: {source_path}"
+        if not stat.S_ISDIR(source_attrs.st_mode):
+            return False, f"Connected, but the remote source path is not a folder: {source_path}"
+
+        stdin, stdout, stderr = client.exec_command(f"mkdir -p {quoted_destination_root}", timeout=60)
+        stdin.close()
+        exit_status = stdout.channel.recv_exit_status()
+        stderr_output = stderr.read().decode("utf-8", errors="replace").strip()
+        if exit_status != 0:
+            return False, stderr_output or f"Connected, but could not prepare the destination path: {destination_root}"
+
+        try:
+            destination_attrs = sftp.stat(destination_root)
+        except OSError:
+            return False, f"Connected, but the destination path could not be verified: {destination_root}"
+        if not stat.S_ISDIR(destination_attrs.st_mode):
+            return False, f"Connected, but the destination path is not a folder: {destination_root}"
+
+        label = str(target.get("label") or target.get("host") or "target").strip()
+        return True, f"SSH backup connection passed for {label} on {host}:{port}."
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+    finally:
+        try:
+            if sftp is not None:
+                sftp.close()
+        except Exception:  # noqa: BLE001
+            pass
+        client.close()
+
+
 def _run_release_backups(*, environment: str, backup_label: str = "") -> tuple[bool, str, list[dict[str, Any]]]:
     with RELEASE_TRACKER_LOCK:
         configured_targets = [deepcopy(item) for item in release_tracker_config.get("backup_targets") or [] if isinstance(item, dict)]
@@ -1821,6 +1888,8 @@ def _notice_text(notice_code: str | None, *, added: str | None = None, skipped: 
         "release-backup-target-updated": "Release backup target updated.",
         "release-backup-target-deleted": "Release backup target removed.",
         "release-backup-target-missing": "Release backup target was not found.",
+        "release-backup-test-passed": "Release backup SSH connection passed.",
+        "release-backup-test-failed": "Release backup SSH connection failed.",
         "bulk-empty": "Bulk upload is empty.",
         "bulk-invalid-alerts": "Bulk upload requires alert recipients when email alerts are enabled.",
         "tested-up": "Health check passed.",
@@ -2747,6 +2816,25 @@ def add_release_backup_target() -> Any:
     return redirect(url_for("server_health_config", notice="release-backup-target-added"))
 
 
+@app.post("/config/releases/backup-targets/test")
+def test_new_release_backup_target() -> Any:
+    try:
+        target = _build_release_backup_target_from_form(request.form)
+    except ValueError:
+        return redirect(url_for("server_health_config", notice="missing-required"))
+
+    password_value = str(request.form.get("password", ""))
+    password_override = password_value if password_value else None
+    ok, message = _test_release_backup_target_connection(target, password_override=password_override)
+    return redirect(
+        url_for(
+            "server_health_config",
+            notice="release-backup-test-passed" if ok else "release-backup-test-failed",
+            message=message,
+        )
+    )
+
+
 @app.post("/config/releases/backup-targets/<target_id>/update")
 def update_release_backup_target(target_id: str) -> Any:
     with RELEASE_TRACKER_LOCK:
@@ -2777,6 +2865,36 @@ def update_release_backup_target(target_id: str) -> Any:
         ]
     _save_release_tracker_config()
     return redirect(url_for("server_health_config", notice="release-backup-target-updated"))
+
+
+@app.post("/config/releases/backup-targets/<target_id>/test")
+def test_saved_release_backup_target(target_id: str) -> Any:
+    with RELEASE_TRACKER_LOCK:
+        existing_targets = [deepcopy(item) for item in release_tracker_config.get("backup_targets") or [] if isinstance(item, dict)]
+    _, existing_target = _find_release_backup_target(target_id, existing_targets)
+    if existing_target is None:
+        return redirect(url_for("server_health_config", notice="release-backup-target-missing"))
+
+    try:
+        target = _build_release_backup_target_from_form(request.form, existing=existing_target)
+    except ValueError:
+        return redirect(url_for("server_health_config", notice="missing-required"))
+
+    password_override: str | None = None
+    if request.form.get("clear_password") == "on":
+        password_override = ""
+    password_value = str(request.form.get("password", ""))
+    if password_value:
+        password_override = password_value
+
+    ok, message = _test_release_backup_target_connection(target, password_override=password_override)
+    return redirect(
+        url_for(
+            "server_health_config",
+            notice="release-backup-test-passed" if ok else "release-backup-test-failed",
+            message=message,
+        )
+    )
 
 
 @app.post("/config/releases/backup-targets/<target_id>/delete")
@@ -3020,8 +3138,11 @@ def server_health_config() -> str:
         added=request.args.get("added"),
         skipped=request.args.get("skipped"),
     )
+    notice_message = str(request.args.get("message") or "").strip()
     if not notice_text and notice_code == "release-config-saved":
         notice_text = "Release tracker and backup configuration saved."
+    elif not notice_text and notice_code in {"release-backup-test-passed", "release-backup-test-failed"}:
+        notice_text = notice_message or _notice_text(notice_code)
 
     return render_template(
         "config_server_health.html",
