@@ -35,14 +35,74 @@
     <h3><i data-lucide="activity"></i> Server Health</h3>
     <p>Active. Configure endpoint URL + credentials and run availability checks.</p>
   </article>
-  <article class="panel aspect-card muted">
+  <article class="panel aspect-card active">
     <h3><i data-lucide="package"></i> Releases</h3>
-    <p>Next. Release source/API configuration will be added here.</p>
+    <p>Active. Configure the release tracker source, scan interval, and base path here.</p>
   </article>
   <article class="panel aspect-card muted">
     <h3><i data-lucide="dollar-sign"></i> SLA Payments</h3>
     <p>Next. Payment processor and SLA source configuration will be added here.</p>
   </article>
+</section>
+
+<section class="panel">
+  <div class="section-row">
+    <div>
+      <h2 class="section-title">
+        <i data-lucide="settings-2"></i>
+        Release Tracker Config
+      </h2>
+      <p class="subtle">
+        Configure the folder tracker used by the Releases board.
+      </p>
+      {% if release_tracker.base_path %}
+      <p class="subtle">Base path: <span class="mono">{{ release_tracker.base_path }}</span></p>
+      {% endif %}
+      {% if release_tracker.last_run_at %}
+      <p class="subtle">Last run (UTC): <span class="mono">{{ release_tracker.last_run_at }}</span></p>
+      {% endif %}
+      {% if release_tracker.last_error %}
+      <p class="subtle error-text">{{ release_tracker.last_error }}</p>
+      {% endif %}
+    </div>
+    <div class="inline-stats">
+      <span><b>{{ 'ON' if release_tracker.is_enabled else 'OFF' }}</b> tracker</span>
+      <span><b>{{ release_tracker.poll_interval_seconds }}</b>s interval</span>
+      <span><b>{{ release_tracker_stats.discovered_folders }}</b> folders</span>
+      <span><b>{{ release_tracker_stats.tracked_releases }}</b> releases</span>
+    </div>
+  </div>
+
+  <form method="post" action="/config/releases/update" class="config-form">
+    <div class="form-grid cols-2">
+      <label>
+        <span>Provider</span>
+        <input value="Filesystem Paths" disabled />
+      </label>
+      <label class="full-width">
+        <span>Base Path</span>
+        <input name="base_path" placeholder="/deployments/releases" value="{{ release_tracker.base_path or '' }}" />
+      </label>
+      <label>
+        <span>Poll Interval (seconds)</span>
+        <input name="poll_interval_seconds" type="number" min="30" max="86400" value="{{ release_tracker.poll_interval_seconds }}" />
+      </label>
+    </div>
+
+    <div class="checkbox-row">
+      <label class="checkbox">
+        <input type="checkbox" name="is_enabled" {% if release_tracker.is_enabled %}checked{% endif %} />
+        Enable release tracker
+      </label>
+    </div>
+
+    <div class="button-row">
+      <button class="btn primary" type="submit">
+        <i data-lucide="save"></i>
+        Save Release Tracker
+      </button>
+    </div>
+  </form>
 </section>
 
 <section class="panel">

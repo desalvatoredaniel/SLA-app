@@ -13,7 +13,7 @@
       Release Folder Tracker
     </h2>
     <p class="subtle">
-      Scans one base directory and treats each immediate child folder from the last 2 years as a release.
+      Scans one base directory and treats each immediate child folder from the last year as a release.
     </p>
     <div class="inline-stats">
       <span><b>{{ 'ON' if release_tracker.is_enabled else 'OFF' }}</b> tracker</span>
@@ -44,35 +44,55 @@
 <section class="panel">
   <div class="section-row">
     <h2 class="section-title">
-      <i data-lucide="settings-2"></i>
-      Release Tracker Config
+      <i data-lucide="mail"></i>
+      Release Notification
     </h2>
   </div>
 
-  <form method="post" action="/config/releases/update" class="config-form">
+  <form method="post" action="/releases/notify" class="config-form">
     <div class="form-grid cols-2">
       <label>
-        <span>Provider</span>
-        <input value="Filesystem Paths" disabled />
-      </label>
-      <label class="full-width">
-        <span>Base Path</span>
-        <input name="base_path" placeholder="/deployments/releases" value="{{ release_tracker.base_path or '' }}" />
+        <span>Release</span>
+        <select name="release_key" required>
+          <option value="" selected disabled>Select release</option>
+          {% for release in release_board %}
+          <option value="{{ release.release_key }}">{{ release.display_name }}</option>
+          {% endfor %}
+        </select>
       </label>
       <label>
-        <span>Poll Interval (seconds)</span>
-        <input name="poll_interval_seconds" type="number" min="30" max="86400" value="{{ release_tracker.poll_interval_seconds }}" />
+        <span>Recipients</span>
+        <input
+          name="recipients"
+          value="{{ release_notification_defaults.recipients }}"
+          placeholder="ops@example.com, qa@example.com"
+          required
+        />
       </label>
-    </div>
-
-    <div class="checkbox-row">
-      <label><input type="checkbox" name="is_enabled" {% if release_tracker.is_enabled %}checked{% endif %} /> Enable tracker</label>
+      <label class="full-width">
+        <span>Subject <small>(optional)</small></span>
+        <input
+          name="subject"
+          placeholder="{{ release_notification_defaults.subject_prefix }} Release Name"
+        />
+      </label>
+      <label class="full-width">
+        <span>Notes <small>(optional)</small></span>
+        <textarea name="message" placeholder="Optional rollout notes, links, or approval details."></textarea>
+      </label>
     </div>
 
     <div class="section-row">
-      <button type="submit" class="btn primary">
-        <i data-lucide="save"></i>
-        Save Tracker
+      <div class="subtle">
+        {% if smtp_configured %}
+        Uses the configured SMTP settings to send a release status email from the current board.
+        {% else %}
+        SMTP is not configured yet. Add the SMTP env vars before sending release notifications.
+        {% endif %}
+      </div>
+      <button type="submit" class="btn primary" {% if not release_board or not smtp_configured %}disabled{% endif %}>
+        <i data-lucide="send"></i>
+        Send Notification
       </button>
     </div>
   </form>
@@ -135,7 +155,7 @@
           </article>
           {% endfor %}
         {% else %}
-        <p class="subtle">No active release folders from the last 2 years are visible. Save a base path and run a scan.</p>
+        <p class="subtle">No active release folders from the last year are visible. Save a base path and run a scan.</p>
         {% endif %}
       </div>
     </div>

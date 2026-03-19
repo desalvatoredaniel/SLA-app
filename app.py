@@ -82,6 +82,10 @@ SMTP_FROM = os.getenv("SLA_ALERT_FROM", "").strip()
 SMTP_USE_TLS = _env_bool("SLA_ALERT_SMTP_USE_TLS", True)
 SMTP_USE_SSL = _env_bool("SLA_ALERT_SMTP_USE_SSL", False)
 EMAIL_SUBJECT_PREFIX = os.getenv("SLA_ALERT_SUBJECT_PREFIX", "[SLA Server Health]").strip() or "[SLA Server Health]"
+RELEASE_NOTIFICATION_SUBJECT_PREFIX = (
+    os.getenv("SLA_RELEASE_NOTIFICATION_SUBJECT_PREFIX", "[Release Notification]").strip() or "[Release Notification]"
+)
+RELEASE_NOTIFICATION_RECIPIENTS = os.getenv("SLA_RELEASE_NOTIFICATION_RECIPIENTS", "").strip()
 
 RELEASE_TRACKER_DEFAULTS: dict[str, Any] = {
     "is_enabled": False,
@@ -1071,6 +1075,52 @@ def _build_release_board(release_items: list[dict[str, Any]], release_targets: l
     return board_rows
 
 
+def _find_release_board_entry(release_board: list[dict[str, Any]], release_key: str) -> dict[str, Any] | None:
+    target_key = _canonical_release_key(release_key)
+    for item in release_board:
+        item_key = _canonical_release_key(str(item.get("release_key") or item.get("display_name") or ""))
+        if item_key == target_key:
+            return item
+    return None
+
+
+def _build_release_notification_body(release_entry: dict[str, Any], custom_message: str) -> str:
+    lines = [
+        f"Release: {str(release_entry.get('display_name') or release_entry.get('release_key') or 'Unknown Release').strip()}",
+    ]
+    release_key = str(release_entry.get("release_key") or "").strip()
+    display_name = str(release_entry.get("display_name") or "").strip()
+    if release_key and release_key != display_name:
+        lines.append(f"Reference: {release_key}")
+
+    lines.append("")
+    lines.append("Current board status:")
+    for step in ("QA", "STAGE", "PROD"):
+        slot = release_entry.get("steps", {}).get(step)
+        if isinstance(slot, dict):
+            slot_title = str(slot.get("title") or "Assigned").strip()
+            slot_path = str(slot.get("path") or "").strip()
+            suffix = f" ({slot_path})" if slot_path else ""
+            lines.append(f"- {step}: {slot_title}{suffix}")
+        else:
+            lines.append(f"- {step}: Not assigned")
+
+    unassigned = release_entry.get("unassigned") or []
+    if isinstance(unassigned, list) and unassigned:
+        lines.append("- UNASSIGNED:")
+        for slot in unassigned:
+            slot_title = str(slot.get("title") or "Unassigned").strip()
+            slot_path = str(slot.get("path") or "").strip()
+            suffix = f" ({slot_path})" if slot_path else ""
+            lines.append(f"  - {slot_title}{suffix}")
+
+    custom_message = custom_message.strip()
+    if custom_message:
+        lines.extend(["", "Notes:", custom_message])
+
+    return "\n".join(lines)
+
+
 def _sync_release_tracker_once(*, force: bool = False) -> dict[str, Any]:
     with RELEASE_TRACKER_LOCK:
         config = deepcopy(release_tracker_config)
@@ -1979,6 +2029,7 @@ def releases() -> str:
     release_board = _build_release_board(release_items, targets_snapshot)
 
     notice_code = request.args.get("notice")
+    notice_message = str(request.args.get("message") or "").strip()
     releases_count = _coerce_int(request.args.get("releases"), 0, 0, 1_000_000)
     processed_count = _coerce_int(request.args.get("processed"), 0, 0, 1_000_000)
     release_notice = ""
@@ -1996,6 +2047,10 @@ def releases() -> str:
         release_notice = "Release folder ignored."
     elif notice_code == "release-target-restored":
         release_notice = "Release folder restored."
+    elif notice_code == "release-notification-sent":
+        release_notice = "Release notification email sent."
+    elif notice_code == "release-notification-error":
+        release_notice = notice_message or "Release notification email failed."
 
     return render_template(
         "releases.html",
@@ -2006,6 +2061,11 @@ def releases() -> str:
         release_tracker=tracker_snapshot,
         release_targets=targets_snapshot,
         tracked_release_count=len(release_board),
+        smtp_configured=_smtp_is_configured(),
+        release_notification_defaults={
+            "recipients": RELEASE_NOTIFICATION_RECIPIENTS,
+            "subject_prefix": RELEASE_NOTIFICATION_SUBJECT_PREFIX,
+        },
         stats={
             "qa": sum(1 for item in release_board if item["steps"].get("QA")),
             "stage": sum(1 for item in release_board if item["steps"].get("STAGE")),
@@ -2031,7 +2091,7 @@ def update_release_tracker_config() -> Any:
     _save_release_tracker_config()
     _sync_release_tracker_once(force=True)
 
-    return redirect(url_for("releases", notice="release-config-saved"))
+    return redirect(url_for("server_health_config", notice="release-config-saved"))
 
 
 @app.post("/releases/sync")
@@ -2047,6 +2107,53 @@ def sync_releases_now() -> Any:
             )
         )
     return redirect(url_for("releases", notice="release-sync-error"))
+
+
+@app.post("/releases/notify")
+def send_release_notification() -> Any:
+    release_key = str(request.form.get("release_key", "")).strip()
+    recipients_raw = str(request.form.get("recipients", "")).strip()
+    custom_subject = str(request.form.get("subject", "")).strip()
+    custom_message = str(request.form.get("message", "")).strip()
+    recipients = _parse_recipients(recipients_raw)
+
+    if not release_key or not recipients:
+        return redirect(
+            url_for(
+                "releases",
+                notice="release-notification-error",
+                message="Release and recipient list are required to send a notification.",
+            )
+        )
+
+    with RELEASE_TRACKER_LOCK:
+        release_items = _build_release_view()
+        targets_snapshot = [dict(item) for item in release_tracker_targets if bool(item.get("is_enabled", True))]
+    release_board = _build_release_board(release_items, targets_snapshot)
+    release_entry = _find_release_board_entry(release_board, release_key)
+    if release_entry is None:
+        return redirect(
+            url_for(
+                "releases",
+                notice="release-notification-error",
+                message="Selected release was not found on the board.",
+            )
+        )
+
+    display_name = str(release_entry.get("display_name") or release_entry.get("release_key") or "Release").strip()
+    subject = custom_subject or f"{RELEASE_NOTIFICATION_SUBJECT_PREFIX} {display_name}"
+    body = _build_release_notification_body(release_entry, custom_message)
+    sent, send_error = _send_alert_email(subject, body, recipients)
+    if not sent:
+        return redirect(
+            url_for(
+                "releases",
+                notice="release-notification-error",
+                message=send_error or "Release notification email failed.",
+            )
+        )
+
+    return redirect(url_for("releases", notice="release-notification-sent"))
 
 
 @app.post("/config/releases/targets/<target_id>/rename")
@@ -2128,6 +2235,9 @@ def server_health_config() -> str:
     checks_for_view: list[dict[str, Any]] = []
     with SERVER_HEALTH_LOCK:
         checks_snapshot = [dict(check) for check in server_health_checks]
+    with RELEASE_TRACKER_LOCK:
+        release_tracker_snapshot = dict(release_tracker_config)
+        release_targets_snapshot = [dict(item) for item in release_tracker_targets if bool(item.get("is_enabled", True))]
 
     for check in checks_snapshot:
         checks_for_view.append(
@@ -2137,18 +2247,28 @@ def server_health_config() -> str:
                 "has_bearer_secret": _has_secret(check["bearer_token_env_key"]),
             }
         )
+    release_board = _build_release_board(_build_release_view(), release_targets_snapshot)
+    notice_code = request.args.get("notice")
+    notice_text = _notice_text(
+        notice_code,
+        added=request.args.get("added"),
+        skipped=request.args.get("skipped"),
+    )
+    if not notice_text and notice_code == "release-config-saved":
+        notice_text = "Release folder tracker configuration saved."
 
     return render_template(
         "config_server_health.html",
         page_title="Server Health Config",
         active_page="config-server-health",
         checks=checks_for_view,
+        release_tracker=release_tracker_snapshot,
+        release_tracker_stats={
+            "discovered_folders": len(release_targets_snapshot),
+            "tracked_releases": len(release_board),
+        },
         server_group_options=SERVER_GROUP_OPTIONS,
-        notice_text=_notice_text(
-            request.args.get("notice"),
-            added=request.args.get("added"),
-            skipped=request.args.get("skipped"),
-        ),
+        notice_text=notice_text,
         health_config_stats=_server_health_stats(),
         health_check_interval_seconds=HEALTH_CHECK_INTERVAL_SECONDS,
         smtp_configured=_smtp_is_configured(),
