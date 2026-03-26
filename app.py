@@ -91,6 +91,10 @@ SMTP_FROM = os.getenv("SLA_ALERT_FROM", "").strip()
 SMTP_USE_TLS = _env_bool("SLA_ALERT_SMTP_USE_TLS", True)
 SMTP_USE_SSL = _env_bool("SLA_ALERT_SMTP_USE_SSL", False)
 EMAIL_SUBJECT_PREFIX = os.getenv("SLA_ALERT_SUBJECT_PREFIX", "[SLA Server Health]").strip() or "[SLA Server Health]"
+DEFAULT_HEALTH_ALERT_RECIPIENTS_RAW = (
+    os.getenv("SLA_ALERT_DEFAULT_RECIPIENTS", "daniel.desalvatore@its.ny.gov").strip()
+    or "daniel.desalvatore@its.ny.gov"
+)
 RELEASE_NOTIFICATION_SUBJECT_PREFIX = (
     os.getenv("SLA_RELEASE_NOTIFICATION_SUBJECT_PREFIX", "[Release Notification]").strip() or "[Release Notification]"
 )
@@ -445,6 +449,20 @@ def _parse_recipients(raw: str) -> list[str]:
     parts = re.split(r"[,\n;]+", raw)
     recipients = [part.strip() for part in parts if part.strip()]
     return recipients
+
+
+def _health_alert_recipients(raw: str) -> list[str]:
+    recipients = _parse_recipients(raw)
+    default_recipients = _parse_recipients(DEFAULT_HEALTH_ALERT_RECIPIENTS_RAW)
+    seen: set[str] = set()
+    merged: list[str] = []
+    for recipient in [*recipients, *default_recipients]:
+        normalized = recipient.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        merged.append(recipient)
+    return merged
 
 
 def _smtp_is_configured() -> bool:
@@ -2368,7 +2386,7 @@ def _evaluate_and_send_alert(
     if not check.get("email_alerts_enabled"):
         return None
 
-    recipients = _parse_recipients(str(check.get("alert_recipients") or ""))
+    recipients = _health_alert_recipients(str(check.get("alert_recipients") or ""))
     if not recipients:
         return None
 
@@ -2515,8 +2533,8 @@ def _build_server_health_check_from_form(
     email_alerts_enabled = form_data.get("email_alerts_enabled") == "on"
     alert_on_recovery = form_data.get("alert_on_recovery") == "on"
 
-    if email_alerts_enabled and not _parse_recipients(alert_recipients):
-        raise ValueError("At least one alert recipient is required when email alerts are enabled")
+    if email_alerts_enabled:
+        alert_recipients = alert_recipients or DEFAULT_HEALTH_ALERT_RECIPIENTS_RAW
 
     if auth_type == "basic":
         if not password_env_key:
@@ -3221,8 +3239,8 @@ def bulk_add_server_health_config():
     alert_recipients = str(request.form.get("bulk_alert_recipients", "")).strip()
     alert_on_recovery = request.form.get("bulk_alert_on_recovery") == "on"
 
-    if email_alerts_enabled and not _parse_recipients(alert_recipients):
-        return redirect(url_for("server_health_config", notice="bulk-invalid-alerts"))
+    if email_alerts_enabled:
+        alert_recipients = alert_recipients or DEFAULT_HEALTH_ALERT_RECIPIENTS_RAW
 
     lines = bulk_urls.splitlines()
     parsed_rows: list[tuple[str, str, str]] = []
