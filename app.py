@@ -260,6 +260,7 @@ SLA_PAYMENTS_INITIAL: list[dict[str, Any]] = [
 ]
 
 sla_payments: list[dict[str, Any]] = deepcopy(SLA_PAYMENTS_INITIAL)
+APP_ID_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,80}$")
 
 
 def _ensure_instance_dir() -> None:
@@ -272,6 +273,43 @@ def _coerce_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(minimum, min(maximum, parsed))
+
+
+def _parse_payment_app_ids(raw_value: Any) -> list[str]:
+    if isinstance(raw_value, list):
+        raw_text = "\n".join(str(item) for item in raw_value)
+    else:
+        raw_text = str(raw_value or "")
+
+    app_ids: list[str] = []
+    seen: set[str] = set()
+    for token in re.split(r"[\s,;]+", raw_text):
+        app_id = token.strip()
+        if not app_id or not APP_ID_TOKEN_PATTERN.fullmatch(app_id):
+            continue
+
+        dedupe_key = app_id.upper()
+        if dedupe_key in seen:
+            continue
+
+        seen.add(dedupe_key)
+        app_ids.append(app_id)
+
+    return app_ids
+
+
+def _build_app_id_url_lookup(app_id: str) -> dict[str, str]:
+    lookup_value = f"%merchant_defined_data1={app_id}%"
+    return {
+        "app_id": app_id,
+        "lookup_value": lookup_value,
+        "sql": (
+            "SELECT * FROM [Prod_SharedServices].[metrics].[Request] "
+            "WHERE url LIKE ?"
+        ),
+        "parameter": lookup_value,
+        "next_step": "Use matching Request.url rows to recover the payment transaction IDs, then continue through the existing JSON backup and cleanup flow.",
+    }
 
 
 def _coerce_float(value: Any, default: float, minimum: float, maximum: float) -> float:
@@ -3379,6 +3417,24 @@ def reprocess_payment(payment_id: str):
             payment["status"] = "processing"
             return jsonify({"ok": True, "status": "processing"})
     return jsonify({"ok": False}), 404
+
+
+@app.post("/api/payments/app-id-query")
+def build_payment_app_id_query():
+    payload = request.get_json(silent=True) or {}
+    app_ids = _parse_payment_app_ids(payload.get("app_ids"))
+
+    if not app_ids:
+        return jsonify({"ok": False, "error": "Enter at least one valid application ID."}), 400
+
+    lookups = [_build_app_id_url_lookup(app_id) for app_id in app_ids]
+    return jsonify(
+        {
+            "ok": True,
+            "count": len(lookups),
+            "lookups": lookups,
+        }
+    )
 
 
 if __name__ == "__main__":

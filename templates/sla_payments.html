@@ -31,6 +31,157 @@
   </article>
 </section>
 
+<section class="panel payment-automation">
+  <div class="section-row">
+    <h2 class="section-title">
+      <i data-lucide="workflow"></i>
+      SLA Payment Automation Map
+    </h2>
+    <span class="mono token">Excel report intake + manual App ID intake</span>
+  </div>
+
+  <div class="automation-visual" aria-label="SLA payment automation flow">
+    <div class="automation-branch excel">
+      <span class="flow-label">Excel transaction path</span>
+      <div class="flow-node">
+        <i data-lucide="mail"></i>
+        <div>
+          <h3>Outlook Inbox</h3>
+          <p>Prior day PROD payment report</p>
+        </div>
+      </div>
+      <div class="flow-link"><span></span></div>
+      <div class="flow-node">
+        <i data-lucide="file-spreadsheet"></i>
+        <div>
+          <h3>XLSX Reports</h3>
+          <p>Read after row 4, stop at blank</p>
+        </div>
+      </div>
+      <div class="flow-link"><span></span></div>
+      <div class="flow-node active">
+        <i data-lucide="fingerprint"></i>
+        <div>
+          <h3>Transaction IDs</h3>
+          <p>Unique payment transaction list</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="automation-branch manual">
+      <span class="flow-label">Manual App ID path</span>
+      <div class="flow-node manual">
+        <i data-lucide="list-plus"></i>
+        <div>
+          <h3>Paste App IDs</h3>
+          <p>Bulk list from support or operations</p>
+        </div>
+      </div>
+      <div class="flow-link"><span></span></div>
+      <div class="flow-node active">
+        <i data-lucide="search-code"></i>
+        <div>
+          <h3>URL Query</h3>
+          <p>WHERE url LIKE merchant_defined_data1</p>
+        </div>
+      </div>
+      <div class="flow-link"><span></span></div>
+      <div class="flow-node">
+        <i data-lucide="fingerprint"></i>
+        <div>
+          <h3>Transaction IDs</h3>
+          <p>Recovered from matching response URLs</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="automation-shared">
+      <div class="shared-line"><span></span></div>
+      <div class="flow-node sql">
+        <i data-lucide="database"></i>
+        <div>
+          <h3>SQL Server Request URL</h3>
+          <p>Prod_SharedServices.metrics.Request</p>
+        </div>
+      </div>
+      <div class="flow-link vertical"><span></span></div>
+      <div class="flow-node oracle">
+        <i data-lucide="archive-restore"></i>
+        <div>
+          <h3>Oracle Application JSON</h3>
+          <p>BFLOWNER.APPLICATION backup</p>
+        </div>
+      </div>
+      <div class="flow-link vertical"><span></span></div>
+      <div class="flow-node clean">
+        <i data-lucide="sparkles"></i>
+        <div>
+          <h3>Clean + Repackage</h3>
+          <p>Remove incomplete Principal and PQ rows</p>
+        </div>
+      </div>
+      <div class="flow-link vertical"><span></span></div>
+      <div class="flow-node log">
+        <i data-lucide="file-check-2"></i>
+        <div>
+          <h3>Audit Log</h3>
+          <p>reprocessed_transactions.jsonl</p>
+        </div>
+      </div>
+    </div>
+
+    <span class="data-packet packet-a"></span>
+    <span class="data-packet packet-b"></span>
+    <span class="data-packet packet-c"></span>
+  </div>
+
+  <div class="automation-workspace">
+    <form class="manual-app-form" data-app-id-form>
+      <label>
+        <span>Manual App IDs</span>
+        <textarea
+          name="app_ids"
+          placeholder="Enter one or more old application IDs, separated by lines, commas, or spaces"
+          data-app-id-input
+        ></textarea>
+      </label>
+      <div class="button-row">
+        <button class="btn primary" type="submit">
+          <i data-lucide="search"></i>
+          Build URL Query
+        </button>
+        <span class="manual-hint">Uses the same payment response URL source to recover transaction IDs.</span>
+      </div>
+    </form>
+
+    <div class="app-id-results" data-app-id-results>
+      <div class="empty-results">
+        <i data-lucide="mouse-pointer-click"></i>
+        <p>Paste App IDs to generate the SQL URL lookup pattern for each application.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="process-systems">
+    <div>
+      <p>Local folders</p>
+      <b class="mono">attachments, json_back_up, new_json, logs</b>
+    </div>
+    <div>
+      <p>App ID URL lookup</p>
+      <b class="mono">WHERE url LIKE '%merchant_defined_data1=&lt;APP_ID&gt;%'</b>
+    </div>
+    <div>
+      <p>Transaction URL lookup</p>
+      <b class="mono">WHERE url LIKE '%&lt;TRANSACTION_ID&gt;%'</b>
+    </div>
+    <div>
+      <p>Known skip</p>
+      <b class="mono">050625C19-CAC0351F-4D17-4132-AC05-D388CBEEB25A</b>
+    </div>
+  </div>
+</section>
+
 <section class="panel">
   <h2 class="section-title">
     <i data-lucide="trending-down"></i>

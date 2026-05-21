@@ -469,9 +469,6 @@
 
   function initSlaPayments() {
     const buttons = Array.from(document.querySelectorAll('.js-reprocess'));
-    if (!buttons.length) {
-      return;
-    }
 
     buttons.forEach((button) => {
       button.addEventListener('click', async () => {
@@ -513,6 +510,89 @@
           button.disabled = false;
         }
       });
+    });
+
+    const appIdForm = document.querySelector('[data-app-id-form]');
+    const appIdInput = document.querySelector('[data-app-id-input]');
+    const appIdResults = document.querySelector('[data-app-id-results]');
+
+    if (!appIdForm || !appIdInput || !appIdResults) {
+      return;
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+
+    function renderEmpty(message) {
+      appIdResults.innerHTML = `
+        <div class="empty-results">
+          <i data-lucide="mouse-pointer-click"></i>
+          <p>${escapeHtml(message)}</p>
+        </div>
+      `;
+      if (window.lucide) {
+        window.lucide.createIcons();
+      }
+    }
+
+    function renderLookups(lookups) {
+      appIdResults.innerHTML = `
+        <div class="app-id-result-list">
+          ${lookups
+            .map(
+              (lookup) => `
+                <article class="app-id-result">
+                  <div class="app-id-result-head">
+                    <span class="mono token">${escapeHtml(lookup.app_id)}</span>
+                    <span class="status-pill processing">URL QUERY</span>
+                  </div>
+                  <code>${escapeHtml(lookup.sql)}</code>
+                  <code>parameter: ${escapeHtml(lookup.parameter)}</code>
+                  <p>${escapeHtml(lookup.next_step)}</p>
+                </article>
+              `,
+            )
+            .join('')}
+        </div>
+      `;
+    }
+
+    appIdForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+
+      const submitButton = appIdForm.querySelector('button[type="submit"]');
+      if (submitButton) {
+        submitButton.disabled = true;
+      }
+
+      try {
+        const response = await fetch('/api/payments/app-id-query', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ app_ids: appIdInput.value }),
+        });
+        const body = await response.json();
+
+        if (!response.ok || !body.ok) {
+          throw new Error(body.error || 'Unable to build lookup queries');
+        }
+
+        renderLookups(body.lookups || []);
+      } catch (error) {
+        renderEmpty(error.message || 'Unable to build lookup queries.');
+      } finally {
+        if (submitButton) {
+          submitButton.disabled = false;
+        }
+      }
     });
   }
 
