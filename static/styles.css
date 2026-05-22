@@ -993,6 +993,39 @@ body {
   font-size: 0.72rem;
 }
 
+.clean-json-copy {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.25rem;
+}
+
+.clean-json-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.clean-json-head p {
+  margin: 0;
+  color: rgba(191, 219, 254, 0.88);
+  font-size: 0.74rem;
+}
+
+.clean-json-textarea {
+  width: 100%;
+  min-height: 260px;
+  border: 1px solid rgba(34, 211, 238, 0.22);
+  border-radius: 0.62rem;
+  background: rgba(2, 6, 23, 0.66);
+  color: rgba(226, 232, 240, 0.96);
+  padding: 0.7rem;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  resize: vertical;
+  white-space: pre;
+}
+
 .automation-running {
   display: grid;
   gap: 0.8rem;
@@ -1070,6 +1103,69 @@ body {
 .automation-result-paths p {
   display: grid;
   gap: 0.2rem;
+}
+
+.automation-log {
+  display: grid;
+  gap: 0.4rem;
+  margin-bottom: 0.7rem;
+  max-height: 340px;
+  overflow: auto;
+  padding: 0.55rem;
+  border: 1px solid rgba(125, 211, 252, 0.14);
+  border-radius: 0.68rem;
+  background: rgba(2, 6, 23, 0.38);
+}
+
+.automation-log-row {
+  display: grid;
+  grid-template-columns: minmax(10rem, 0.34fr) 4.7rem minmax(0, 1fr);
+  gap: 0.55rem;
+  align-items: start;
+  padding: 0.45rem 0.5rem;
+  border-radius: 0.5rem;
+  background: rgba(15, 23, 42, 0.52);
+}
+
+.automation-log-row span,
+.automation-log-row p,
+.automation-log-row code {
+  font-size: 0.68rem;
+}
+
+.automation-log-row span {
+  color: rgba(147, 197, 253, 0.78);
+}
+
+.automation-log-row b {
+  color: #67e8f9;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+}
+
+.automation-log-row p {
+  margin: 0;
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.automation-log-row code {
+  display: block;
+  margin-top: 0.2rem;
+  color: rgba(191, 219, 254, 0.78);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.automation-log-row.success b {
+  color: #86efac;
+}
+
+.automation-log-row.warning b {
+  color: #fde68a;
+}
+
+.automation-log-row.error b {
+  color: #fca5a5;
 }
 
 .process-systems {
@@ -2200,6 +2296,7 @@ body {
   .automation-shared,
   .automation-workspace,
   .automation-result-summary,
+  .automation-log-row,
   .process-systems {
     grid-template-columns: 1fr;
   }

@@ -475,6 +475,8 @@
     const appIdInput = document.querySelector('[data-app-id-input]');
     const runResults = document.querySelector('[data-run-results]');
     const runStatus = document.querySelector('[data-run-status]');
+    const runButtons = Array.from(document.querySelectorAll('[data-email-run-form] button, [data-app-run-form] button'));
+    let runPollTimer = null;
 
     if (!runResults) {
       return;
@@ -527,7 +529,59 @@
       refreshIcons();
     }
 
-    function renderRunResult(body) {
+    function renderEventLog(events) {
+      const safeEvents = Array.isArray(events) ? events : [];
+      if (!safeEvents.length) {
+        return `
+          <div class="automation-log">
+            <div class="automation-log-row info">
+              <span class="mono">--</span>
+              <b>info</b>
+              <p>Waiting for run events...</p>
+            </div>
+          </div>
+        `;
+      }
+
+      return `
+        <div class="automation-log">
+          ${safeEvents
+            .map((event) => {
+              const details = event.details && Object.keys(event.details).length
+                ? ` <code>${escapeHtml(JSON.stringify(event.details))}</code>`
+                : '';
+              return `
+                <div class="automation-log-row ${escapeHtml(event.level || 'info')}">
+                  <span class="mono">${escapeHtml(event.timestamp || '')}</span>
+                  <b>${escapeHtml(event.level || 'info')}</b>
+                  <p>${escapeHtml(event.message || '')}${details}</p>
+                </div>
+              `;
+            })
+            .join('')}
+        </div>
+      `;
+    }
+
+    function setRunButtonsDisabled(isDisabled) {
+      runButtons.forEach((button) => {
+        button.disabled = isDisabled;
+      });
+    }
+
+    function renderRunProgress(run) {
+      setRunStatus((run.status || 'RUNNING').toUpperCase(), run.status === 'failed' ? 'error' : 'processing');
+      runResults.innerHTML = `
+        <div class="automation-running">
+          <div class="progress-track"><div class="progress-fill processing"></div></div>
+          <p>Run ID: <span class="mono">${escapeHtml(run.id || '')}</span></p>
+        </div>
+        ${renderEventLog(run.events)}
+      `;
+      refreshIcons();
+    }
+
+    function renderRunResult(body, events) {
       const results = Array.isArray(body.results) ? body.results : [];
       const attachments = Array.isArray(body.attachments) ? body.attachments : [];
       setRunStatus('COMPLETE', 'success');
@@ -561,6 +615,7 @@
               : ''
           }
         </div>
+        ${renderEventLog(events)}
         <div class="app-id-result-list">
           ${results
             .map(
@@ -576,6 +631,22 @@
                   <code>Application Number: ${escapeHtml(item['App Number'] || '')}</code>
                   <code>Clean JSON Path: ${escapeHtml(item['Clean JSON Path'] || '')}</code>
                   <code>Backup JSON Path: ${escapeHtml(item['Backup JSON Path'] || '')}</code>
+                  ${
+                    item['Clean JSON']
+                      ? `
+                        <div class="clean-json-copy">
+                          <div class="clean-json-head">
+                            <p>Clean JSON ready to copy</p>
+                            <button class="btn" type="button" data-copy-json>
+                              <i data-lucide="copy"></i>
+                              Copy JSON
+                            </button>
+                          </div>
+                          <textarea class="clean-json-textarea mono" readonly>${escapeHtml(item['Clean JSON'])}</textarea>
+                        </div>
+                      `
+                      : ''
+                  }
                   <p>${escapeHtml(item.Message || item['Base URL'] || 'Processed through the SLA payment automation flow.')}</p>
                 </article>
               `,
@@ -586,21 +657,90 @@
       refreshIcons();
     }
 
-    async function runAutomation(form, endpoint, payload) {
-      const submitButton = form ? form.querySelector('button[type="submit"]') : null;
-      if (submitButton) {
-        submitButton.disabled = true;
+    async function pollRun(runId) {
+      try {
+        const response = await fetch(`/api/payments/runs/${encodeURIComponent(runId)}`);
+        const body = await response.json();
+        if (!response.ok || !body.ok) {
+          throw new Error(body.error || 'Unable to read run status');
+        }
+
+        if (body.status === 'completed' && body.result) {
+          window.clearInterval(runPollTimer);
+          runPollTimer = null;
+          setRunButtonsDisabled(false);
+          renderRunResult(body.result, body.events);
+          return;
+        }
+
+        if (body.status === 'failed') {
+          window.clearInterval(runPollTimer);
+          runPollTimer = null;
+          setRunButtonsDisabled(false);
+          setRunStatus('FAILED', 'error');
+          runResults.innerHTML = `
+            <div class="automation-error">
+              <i data-lucide="triangle-alert"></i>
+              <div>
+                <h3>Automation did not run</h3>
+                <p>${escapeHtml(body.error || 'Automation failed.')}</p>
+              </div>
+            </div>
+            ${renderEventLog(body.events)}
+          `;
+          refreshIcons();
+          return;
+        }
+
+        renderRunProgress(body);
+      } catch (error) {
+        window.clearInterval(runPollTimer);
+        runPollTimer = null;
+        setRunButtonsDisabled(false);
+        renderError(error.message || 'Unable to read run status.');
       }
+    }
+
+    runResults.addEventListener('click', async (event) => {
+      const button = event.target instanceof Element ? event.target.closest('[data-copy-json]') : null;
+      if (!button) {
+        return;
+      }
+
+      const wrapper = button.closest('.clean-json-copy');
+      const textarea = wrapper ? wrapper.querySelector('.clean-json-textarea') : null;
+      if (!textarea) {
+        return;
+      }
+
+      try {
+        await navigator.clipboard.writeText(textarea.value);
+        button.classList.add('primary');
+        button.innerHTML = '<i data-lucide="check"></i> Copied';
+        refreshIcons();
+      } catch (error) {
+        textarea.focus();
+        textarea.select();
+      }
+    });
+
+    async function runAutomation(form, endpoint, payload) {
+      setRunButtonsDisabled(true);
 
       setRunStatus('RUNNING', 'processing');
       runResults.innerHTML = `
         <div class="automation-running">
           <div class="progress-track"><div class="progress-fill processing"></div></div>
-          <p>Running the SLA payment automation on the configured workstation dependencies.</p>
+          <p>Starting the SLA payment automation and opening the live log stream.</p>
         </div>
       `;
 
       try {
+        if (runPollTimer) {
+          window.clearInterval(runPollTimer);
+          runPollTimer = null;
+        }
+
         const response = await fetch(endpoint, {
           method: 'POST',
           headers: {
@@ -614,13 +754,12 @@
           throw new Error(body.error || 'Automation failed');
         }
 
-        renderRunResult(body);
+        renderRunProgress(body);
+        await pollRun(body.id);
+        runPollTimer = window.setInterval(() => pollRun(body.id), 1000);
       } catch (error) {
+        setRunButtonsDisabled(false);
         renderError(error.message || 'Automation failed.');
-      } finally {
-        if (submitButton) {
-          submitButton.disabled = false;
-        }
       }
     }
 

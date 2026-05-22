@@ -69,6 +69,8 @@ _health_checker_start_lock = threading.Lock()
 RELEASE_TRACKER_LOCK = threading.RLock()
 _release_tracker_thread: threading.Thread | None = None
 _release_tracker_start_lock = threading.Lock()
+PAYMENT_AUTOMATION_LOCK = threading.RLock()
+payment_automation_runs: dict[str, dict[str, Any]] = {}
 
 
 def _env_bool(key: str, default: bool) -> bool:
@@ -3167,6 +3169,117 @@ def payments() -> str:
     )
 
 
+def _automation_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _append_payment_automation_event(
+    run_id: str,
+    level: str,
+    message: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    with PAYMENT_AUTOMATION_LOCK:
+        run = payment_automation_runs.get(run_id)
+        if run is None:
+            return
+        events = run.setdefault("events", [])
+        events.append(
+            {
+                "index": len(events) + 1,
+                "timestamp": _automation_timestamp(),
+                "level": level,
+                "message": message,
+                "details": details or {},
+            }
+        )
+
+
+def _payment_automation_snapshot(run_id: str) -> dict[str, Any] | None:
+    with PAYMENT_AUTOMATION_LOCK:
+        run = payment_automation_runs.get(run_id)
+        if run is None:
+            return None
+        return deepcopy(run)
+
+
+def _create_payment_automation_run(mode: str, source: dict[str, Any]) -> str:
+    run_id = uuid4().hex
+    with PAYMENT_AUTOMATION_LOCK:
+        payment_automation_runs[run_id] = {
+            "ok": True,
+            "id": run_id,
+            "mode": mode,
+            "source": source,
+            "status": "queued",
+            "created_at": _automation_timestamp(),
+            "started_at": "",
+            "finished_at": "",
+            "events": [],
+            "result": None,
+            "error": "",
+        }
+    _append_payment_automation_event(run_id, "info", "Run queued.", source)
+    return run_id
+
+
+def _run_payment_automation_job(run_id: str, worker: Any) -> None:
+    pythoncom = None
+    try:
+        try:
+            import pythoncom as pythoncom_module
+
+            pythoncom = pythoncom_module
+            pythoncom.CoInitialize()
+        except ImportError:
+            pythoncom = None
+
+        with PAYMENT_AUTOMATION_LOCK:
+            run = payment_automation_runs.get(run_id)
+            if run is not None:
+                run["status"] = "running"
+                run["started_at"] = _automation_timestamp()
+        _append_payment_automation_event(run_id, "info", "Run started.")
+
+        def progress(level: str, message: str, details: dict[str, Any] | None = None) -> None:
+            _append_payment_automation_event(run_id, level, message, details)
+
+        result = worker(progress)
+        with PAYMENT_AUTOMATION_LOCK:
+            run = payment_automation_runs.get(run_id)
+            if run is not None:
+                run["status"] = "completed"
+                run["finished_at"] = _automation_timestamp()
+                run["result"] = result
+        _append_payment_automation_event(run_id, "success", "Run completed.")
+    except Exception as exc:
+        app.logger.exception("SLA payment automation run failed")
+        with PAYMENT_AUTOMATION_LOCK:
+            run = payment_automation_runs.get(run_id)
+            if run is not None:
+                run["status"] = "failed"
+                run["finished_at"] = _automation_timestamp()
+                run["error"] = str(exc)
+        _append_payment_automation_event(run_id, "error", "Run failed.", {"error": str(exc)})
+    finally:
+        if pythoncom is not None:
+            pythoncom.CoUninitialize()
+
+
+def _start_payment_automation_run(mode: str, source: dict[str, Any], worker: Any) -> dict[str, Any]:
+    run_id = _create_payment_automation_run(mode, source)
+    thread = threading.Thread(
+        target=_run_payment_automation_job,
+        args=(run_id, worker),
+        name=f"sla-payment-automation-{run_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+    snapshot = _payment_automation_snapshot(run_id) or {}
+    snapshot["status_url"] = url_for("payment_automation_run_status", run_id=run_id)
+    return snapshot
+
+
 @app.get("/config")
 def config_root():
     return redirect(url_for("server_health_config"))
@@ -3402,16 +3515,15 @@ def run_payment_email_date_automation():
     payload = request.get_json(silent=True) or {}
     try:
         report_date = parse_report_date(payload.get("report_date"))
-        result = SLAPaymentAutomationRunner().run_from_email_date(report_date)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
-    except AutomationDependencyError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 503
-    except Exception as exc:
-        app.logger.exception("SLA payment email-date automation failed")
-        return jsonify({"ok": False, "error": str(exc)}), 500
 
-    return jsonify(result)
+    run = _start_payment_automation_run(
+        "email_date",
+        {"report_date": report_date.strftime("%m/%d/%Y")},
+        lambda progress: SLAPaymentAutomationRunner().run_from_email_date(report_date, progress=progress),
+    )
+    return jsonify(run), 202
 
 
 @app.post("/api/payments/run-app-ids")
@@ -3421,15 +3533,20 @@ def run_payment_app_id_automation():
     if not app_ids:
         return jsonify({"ok": False, "error": "Enter at least one valid application ID."}), 400
 
-    try:
-        result = SLAPaymentAutomationRunner().run_from_app_ids(app_ids)
-    except AutomationDependencyError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 503
-    except Exception as exc:
-        app.logger.exception("SLA payment App ID automation failed")
-        return jsonify({"ok": False, "error": str(exc)}), 500
+    run = _start_payment_automation_run(
+        "app_ids",
+        {"app_ids": app_ids},
+        lambda progress: SLAPaymentAutomationRunner().run_from_app_ids(app_ids, progress=progress),
+    )
+    return jsonify(run), 202
 
-    return jsonify(result)
+
+@app.get("/api/payments/runs/<run_id>")
+def payment_automation_run_status(run_id: str):
+    snapshot = _payment_automation_snapshot(run_id)
+    if snapshot is None:
+        return jsonify({"ok": False, "error": "Run not found."}), 404
+    return jsonify(snapshot)
 
 
 if __name__ == "__main__":

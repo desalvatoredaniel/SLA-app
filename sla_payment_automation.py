@@ -7,13 +7,11 @@ import re
 from importlib import import_module
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 
-DEFAULT_BASE_DIR = Path(
-    r"C:\Users\DDesalvatore\OneDrive - New York State Office of Information Technology Services\Documents\Python\SLA-Payment-Automation"
-)
+DEFAULT_BASE_DIR = Path(__file__).resolve().parent / "instance" / "sla_payment_automation"
 
 BASE_DIR = Path(os.getenv("SLA_PAYMENT_AUTOMATION_BASE_DIR", str(DEFAULT_BASE_DIR)))
 ATTACHMENTS_DIR = BASE_DIR / "attachments"
@@ -39,6 +37,19 @@ TRANSACTION_PARAM_NAMES = (
 
 class AutomationDependencyError(RuntimeError):
     pass
+
+
+ProgressCallback = Callable[[str, str, dict[str, Any] | None], None]
+
+
+def emit_progress(
+    progress: ProgressCallback | None,
+    level: str,
+    message: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    if progress is not None:
+        progress(level, message, details or {})
 
 
 def ensure_payment_dirs() -> None:
@@ -373,6 +384,10 @@ class SLAPayment:
                 "",
             )
 
+        clean_json_content = ""
+        if self.clean_json_path and self.clean_json_path.exists():
+            clean_json_content = self.clean_json_path.read_text(encoding="utf-8")
+
         return {
             "Transaction ID": self.transaction_id,
             "Old App Number": self.old_app_number,
@@ -381,6 +396,7 @@ class SLAPayment:
             "Status": self.status,
             "Backup JSON Path": str(self.backup_path) if self.backup_path else "",
             "Clean JSON Path": str(self.clean_json_path) if self.clean_json_path else "",
+            "Clean JSON": clean_json_content,
             "Database Mode": DATABASE_MODE,
         }
 
@@ -480,22 +496,36 @@ def write_reprocess_log(processed_transactions: list[SLAPayment]) -> Path:
 
 
 class SLAPaymentAutomationRunner:
-    def run_from_email_date(self, report_date: datetime) -> dict[str, Any]:
+    def run_from_email_date(self, report_date: datetime, progress: ProgressCallback | None = None) -> dict[str, Any]:
         configure_payment_logging()
         logging.info("Starting SLA Payment Automation from email date %s", report_date.strftime("%m/%d/%Y"))
+        emit_progress(progress, "info", "Starting email date automation.", {"report_date": report_date.strftime("%m/%d/%Y")})
 
+        emit_progress(progress, "info", "Searching Outlook for SLA payment report email.")
         email_reader = OutlookEmailReader(ATTACHMENTS_DIR)
         attachments = email_reader.retrieve_attachments(report_date)
+        emit_progress(progress, "info", "Downloaded Outlook attachments.", {"count": len(attachments)})
+
+        emit_progress(progress, "info", "Reading XLSX reports for Transaction ID values.")
         excel_reader = ExcelReader(ATTACHMENTS_DIR)
         transactions = excel_reader.read_reports()
+        emit_progress(progress, "info", "Collected unique transaction IDs.", {"count": len(transactions)})
 
         processed_transactions: list[SLAPayment] = []
         skipped_transactions: list[str] = []
+        emit_progress(progress, "info", "Opening SQL Server and Oracle read-only connections.")
         with get_sql_connection() as sql_conn, get_oracle_connection() as oracle_conn:
-            for transaction_id in transactions:
+            for index, transaction_id in enumerate(transactions, start=1):
+                emit_progress(
+                    progress,
+                    "info",
+                    "Processing transaction.",
+                    {"index": index, "total": len(transactions), "transaction_id": transaction_id},
+                )
                 if transaction_id in BAD_TRANSACTIONS:
                     skipped_transactions.append(transaction_id)
                     logging.warning("Skipping bad transaction: %s", transaction_id)
+                    emit_progress(progress, "warning", "Skipped known bad transaction.", {"transaction_id": transaction_id})
                     continue
 
                 payment = SLAPayment(transaction_id=transaction_id, sql_conn=sql_conn, oracle_conn=oracle_conn)
@@ -507,14 +537,26 @@ class SLAPaymentAutomationRunner:
                         payment.old_app_number,
                         payment.app_number,
                     )
+                    emit_progress(
+                        progress,
+                        "success",
+                        "Transaction processed and clean JSON written.",
+                        {
+                            "transaction_id": transaction_id,
+                            "old_app_number": payment.old_app_number,
+                            "clean_json_path": str(payment.clean_json_path) if payment.clean_json_path else "",
+                        },
+                    )
                 except Exception as exc:
                     payment.status = "failed"
                     payment.message = str(exc)
                     logging.exception("Failed processing transaction %s: %s", transaction_id, exc)
+                    emit_progress(progress, "error", "Transaction failed.", {"transaction_id": transaction_id, "error": str(exc)})
                 processed_transactions.append(payment)
 
         log_path = write_reprocess_log(processed_transactions)
         logging.info("SLA Payment Automation Complete")
+        emit_progress(progress, "success", "Email date automation complete.", {"log_path": str(log_path)})
         return self._build_result(
             mode="email_date",
             source={"report_date": report_date.strftime("%m/%d/%Y")},
@@ -525,13 +567,21 @@ class SLAPaymentAutomationRunner:
             log_path=log_path,
         )
 
-    def run_from_app_ids(self, app_ids: list[str]) -> dict[str, Any]:
+    def run_from_app_ids(self, app_ids: list[str], progress: ProgressCallback | None = None) -> dict[str, Any]:
         configure_payment_logging()
         logging.info("Starting SLA Payment Automation from app ids: %s", ", ".join(app_ids))
+        emit_progress(progress, "info", "Starting App ID automation.", {"count": len(app_ids)})
 
         processed_transactions: list[SLAPayment] = []
+        emit_progress(progress, "info", "Opening SQL Server and Oracle read-only connections.")
         with get_sql_connection() as sql_conn, get_oracle_connection() as oracle_conn:
-            for app_id in app_ids:
+            for index, app_id in enumerate(app_ids, start=1):
+                emit_progress(
+                    progress,
+                    "info",
+                    "Processing App ID.",
+                    {"index": index, "total": len(app_ids), "app_id": app_id},
+                )
                 payment = SLAPayment(old_app_number=app_id, sql_conn=sql_conn, oracle_conn=oracle_conn)
                 try:
                     payment.process_from_app_id()
@@ -541,14 +591,26 @@ class SLAPaymentAutomationRunner:
                         payment.transaction_id,
                         payment.app_number,
                     )
+                    emit_progress(
+                        progress,
+                        "success",
+                        "App ID processed and clean JSON written.",
+                        {
+                            "app_id": app_id,
+                            "transaction_id": payment.transaction_id,
+                            "clean_json_path": str(payment.clean_json_path) if payment.clean_json_path else "",
+                        },
+                    )
                 except Exception as exc:
                     payment.status = "failed"
                     payment.message = str(exc)
                     logging.exception("Failed processing app id %s: %s", app_id, exc)
+                    emit_progress(progress, "error", "App ID failed.", {"app_id": app_id, "error": str(exc)})
                 processed_transactions.append(payment)
 
         log_path = write_reprocess_log(processed_transactions)
         logging.info("SLA Payment Automation App ID run complete")
+        emit_progress(progress, "success", "App ID automation complete.", {"log_path": str(log_path)})
         return self._build_result(
             mode="app_ids",
             source={"app_ids": app_ids},
