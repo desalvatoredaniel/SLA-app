@@ -27,6 +27,19 @@ from uuid import uuid4
 
 from flask import Flask, jsonify, redirect, render_template, request, url_for
 
+from sla_payment_automation import (
+    ATTACHMENTS_DIR,
+    BACKUP_DIR,
+    BASE_DIR,
+    BAD_TRANSACTIONS,
+    LOG_DIR,
+    NEW_JSON_DIR,
+    AutomationDependencyError,
+    SLAPaymentAutomationRunner,
+    parse_app_ids,
+    parse_report_date,
+)
+
 try:
     import paramiko
 except ImportError:
@@ -260,7 +273,6 @@ SLA_PAYMENTS_INITIAL: list[dict[str, Any]] = [
 ]
 
 sla_payments: list[dict[str, Any]] = deepcopy(SLA_PAYMENTS_INITIAL)
-APP_ID_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,80}$")
 
 
 def _ensure_instance_dir() -> None:
@@ -273,43 +285,6 @@ def _coerce_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(minimum, min(maximum, parsed))
-
-
-def _parse_payment_app_ids(raw_value: Any) -> list[str]:
-    if isinstance(raw_value, list):
-        raw_text = "\n".join(str(item) for item in raw_value)
-    else:
-        raw_text = str(raw_value or "")
-
-    app_ids: list[str] = []
-    seen: set[str] = set()
-    for token in re.split(r"[\s,;]+", raw_text):
-        app_id = token.strip()
-        if not app_id or not APP_ID_TOKEN_PATTERN.fullmatch(app_id):
-            continue
-
-        dedupe_key = app_id.upper()
-        if dedupe_key in seen:
-            continue
-
-        seen.add(dedupe_key)
-        app_ids.append(app_id)
-
-    return app_ids
-
-
-def _build_app_id_url_lookup(app_id: str) -> dict[str, str]:
-    lookup_value = f"%merchant_defined_data1={app_id}%"
-    return {
-        "app_id": app_id,
-        "lookup_value": lookup_value,
-        "sql": (
-            "SELECT * FROM [Prod_SharedServices].[metrics].[Request] "
-            "WHERE url LIKE ?"
-        ),
-        "parameter": lookup_value,
-        "next_step": "Use matching Request.url rows to recover the payment transaction IDs, then continue through the existing JSON backup and cleanup flow.",
-    }
 
 
 def _coerce_float(value: Any, default: float, minimum: float, maximum: float) -> float:
@@ -3179,12 +3154,13 @@ def payments() -> str:
         "sla_payments.html",
         page_title="SLA Payments",
         active_page="sla-payments",
-        payments=sla_payments,
-        totals={
-            "total": sum(item["amount"] for item in sla_payments),
-            "pending": sum(item["amount"] for item in sla_payments if item["status"] == "pending"),
-            "processing": sum(item["amount"] for item in sla_payments if item["status"] == "processing"),
-            "completed": sum(item["amount"] for item in sla_payments if item["status"] == "completed"),
+        automation={
+            "base_dir": str(BASE_DIR),
+            "attachments_dir": str(ATTACHMENTS_DIR),
+            "backup_dir": str(BACKUP_DIR),
+            "new_json_dir": str(NEW_JSON_DIR),
+            "log_dir": str(LOG_DIR),
+            "bad_transactions": sorted(BAD_TRANSACTIONS),
         },
     )
 
@@ -3419,22 +3395,39 @@ def reprocess_payment(payment_id: str):
     return jsonify({"ok": False}), 404
 
 
-@app.post("/api/payments/app-id-query")
-def build_payment_app_id_query():
+@app.post("/api/payments/run-email-date")
+def run_payment_email_date_automation():
     payload = request.get_json(silent=True) or {}
-    app_ids = _parse_payment_app_ids(payload.get("app_ids"))
+    try:
+        report_date = parse_report_date(payload.get("report_date"))
+        result = SLAPaymentAutomationRunner().run_from_email_date(report_date)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except AutomationDependencyError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
+    except Exception as exc:
+        app.logger.exception("SLA payment email-date automation failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
+    return jsonify(result)
+
+
+@app.post("/api/payments/run-app-ids")
+def run_payment_app_id_automation():
+    payload = request.get_json(silent=True) or {}
+    app_ids = parse_app_ids(payload.get("app_ids"))
     if not app_ids:
         return jsonify({"ok": False, "error": "Enter at least one valid application ID."}), 400
 
-    lookups = [_build_app_id_url_lookup(app_id) for app_id in app_ids]
-    return jsonify(
-        {
-            "ok": True,
-            "count": len(lookups),
-            "lookups": lookups,
-        }
-    )
+    try:
+        result = SLAPaymentAutomationRunner().run_from_app_ids(app_ids)
+    except AutomationDependencyError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
+    except Exception as exc:
+        app.logger.exception("SLA payment App ID automation failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    return jsonify(result)
 
 
 if __name__ == "__main__":

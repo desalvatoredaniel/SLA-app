@@ -3,31 +3,31 @@
 <section class="grid stats-grid cols-4">
   <article class="panel stat total">
     <div>
-      <p class="label">Total SLA Credits</p>
-      <p class="value purple">${{ '{:,}'.format(totals.total) }}</p>
+      <p class="label">Primary Run</p>
+      <p class="value cyan">Email Date</p>
     </div>
-    <i data-lucide="dollar-sign"></i>
+    <i data-lucide="calendar-days"></i>
   </article>
   <article class="panel stat warning">
     <div>
-      <p class="label">Pending</p>
-      <p class="value yellow">${{ '{:,}'.format(totals.pending) }}</p>
+      <p class="label">Manual Run</p>
+      <p class="value yellow">App IDs</p>
     </div>
-    <i data-lucide="clock-3"></i>
+    <i data-lucide="list-plus"></i>
   </article>
   <article class="panel stat processing">
     <div>
-      <p class="label">Processing</p>
-      <p class="value blue">${{ '{:,}'.format(totals.processing) }}</p>
+      <p class="label">Lookup Source</p>
+      <p class="value blue">Request URL</p>
     </div>
-    <i data-lucide="refresh-cw"></i>
+    <i data-lucide="database"></i>
   </article>
   <article class="panel stat healthy">
     <div>
-      <p class="label">Completed</p>
-      <p class="value green">${{ '{:,}'.format(totals.completed) }}</p>
+      <p class="label">Output</p>
+      <p class="value green">Clean JSON</p>
     </div>
-    <i data-lucide="check-circle-2"></i>
+    <i data-lucide="file-check-2"></i>
   </article>
 </section>
 
@@ -35,53 +35,53 @@
   <div class="section-row">
     <h2 class="section-title">
       <i data-lucide="workflow"></i>
-      SLA Payment Automation Map
+      SLA Payment Automation
     </h2>
-    <span class="mono token">Excel report intake + manual App ID intake</span>
+    <span class="mono token">Outlook + Excel + SQL Server + Oracle</span>
   </div>
 
   <div class="automation-visual" aria-label="SLA payment automation flow">
     <div class="automation-branch excel">
-      <span class="flow-label">Excel transaction path</span>
+      <span class="flow-label">Email report run</span>
       <div class="flow-node">
-        <i data-lucide="mail"></i>
+        <i data-lucide="calendar-days"></i>
         <div>
-          <h3>Outlook Inbox</h3>
-          <p>Prior day PROD payment report</p>
+          <h3>Email Date</h3>
+          <p>Build PROD report subject for that day</p>
         </div>
       </div>
       <div class="flow-link"><span></span></div>
       <div class="flow-node">
-        <i data-lucide="file-spreadsheet"></i>
+        <i data-lucide="mail"></i>
         <div>
-          <h3>XLSX Reports</h3>
-          <p>Read after row 4, stop at blank</p>
+          <h3>Outlook Attachments</h3>
+          <p>Save XLSX reports to attachments</p>
         </div>
       </div>
       <div class="flow-link"><span></span></div>
       <div class="flow-node active">
-        <i data-lucide="fingerprint"></i>
+        <i data-lucide="file-spreadsheet"></i>
         <div>
           <h3>Transaction IDs</h3>
-          <p>Unique payment transaction list</p>
+          <p>Read Excel Transaction ID column</p>
         </div>
       </div>
     </div>
 
     <div class="automation-branch manual">
-      <span class="flow-label">Manual App ID path</span>
+      <span class="flow-label">Manual app id run</span>
       <div class="flow-node manual">
         <i data-lucide="list-plus"></i>
         <div>
-          <h3>Paste App IDs</h3>
-          <p>Bulk list from support or operations</p>
+          <h3>App IDs</h3>
+          <p>Paste old application numbers</p>
         </div>
       </div>
       <div class="flow-link"><span></span></div>
       <div class="flow-node active">
         <i data-lucide="search-code"></i>
         <div>
-          <h3>URL Query</h3>
+          <h3>URL Lookup</h3>
           <p>WHERE url LIKE merchant_defined_data1</p>
         </div>
       </div>
@@ -89,8 +89,8 @@
       <div class="flow-node">
         <i data-lucide="fingerprint"></i>
         <div>
-          <h3>Transaction IDs</h3>
-          <p>Recovered from matching response URLs</p>
+          <h3>Same Processor</h3>
+          <p>Run JSON backup and cleanup per App ID</p>
         </div>
       </div>
     </div>
@@ -100,7 +100,7 @@
       <div class="flow-node sql">
         <i data-lucide="database"></i>
         <div>
-          <h3>SQL Server Request URL</h3>
+          <h3>SQL Server</h3>
           <p>Prod_SharedServices.metrics.Request</p>
         </div>
       </div>
@@ -108,23 +108,23 @@
       <div class="flow-node oracle">
         <i data-lucide="archive-restore"></i>
         <div>
-          <h3>Oracle Application JSON</h3>
-          <p>BFLOWNER.APPLICATION backup</p>
+          <h3>Oracle JSON Backup</h3>
+          <p>BFLOWNER.APPLICATION</p>
         </div>
       </div>
       <div class="flow-link vertical"><span></span></div>
       <div class="flow-node clean">
         <i data-lucide="sparkles"></i>
         <div>
-          <h3>Clean + Repackage</h3>
-          <p>Remove incomplete Principal and PQ rows</p>
+          <h3>Clean JSON</h3>
+          <p>Principal and PQ cleanup rules</p>
         </div>
       </div>
       <div class="flow-link vertical"><span></span></div>
       <div class="flow-node log">
         <i data-lucide="file-check-2"></i>
         <div>
-          <h3>Audit Log</h3>
+          <h3>Write Audit</h3>
           <p>reprocessed_transactions.jsonl</p>
         </div>
       </div>
@@ -136,100 +136,72 @@
   </div>
 
   <div class="automation-workspace">
-    <form class="manual-app-form" data-app-id-form>
+    <form class="automation-run-form" data-email-run-form>
+      <label>
+        <span>Email report date</span>
+        <input name="report_date" type="date" data-email-date-input />
+      </label>
+      <p class="manual-hint">Runs the Outlook attachment download, Excel Transaction ID read, SQL URL lookup, Oracle JSON backup, cleanup, and JSONL audit flow.</p>
+      <div class="button-row">
+        <button class="btn primary" type="submit">
+          <i data-lucide="play"></i>
+          Run Email Date Automation
+        </button>
+      </div>
+    </form>
+
+    <form class="automation-run-form" data-app-run-form>
       <label>
         <span>Manual App IDs</span>
         <textarea
           name="app_ids"
-          placeholder="Enter one or more old application IDs, separated by lines, commas, or spaces"
+          placeholder="Enter old application IDs, separated by lines, commas, or spaces"
           data-app-id-input
         ></textarea>
       </label>
+      <p class="manual-hint">Uses each App ID as OLD_APPLICATION_NUMBER, runs the matching Request URL query, then executes the same Oracle JSON backup, cleanup, and audit flow.</p>
       <div class="button-row">
         <button class="btn primary" type="submit">
-          <i data-lucide="search"></i>
-          Build URL Query
+          <i data-lucide="play"></i>
+          Run App ID Automation
         </button>
-        <span class="manual-hint">Uses the same payment response URL source to recover transaction IDs.</span>
       </div>
     </form>
-
-    <div class="app-id-results" data-app-id-results>
-      <div class="empty-results">
-        <i data-lucide="mouse-pointer-click"></i>
-        <p>Paste App IDs to generate the SQL URL lookup pattern for each application.</p>
-      </div>
-    </div>
   </div>
 
   <div class="process-systems">
     <div>
-      <p>Local folders</p>
-      <b class="mono">attachments, json_back_up, new_json, logs</b>
+      <p>Base folder</p>
+      <b class="mono">{{ automation.base_dir }}</b>
     </div>
     <div>
-      <p>App ID URL lookup</p>
-      <b class="mono">WHERE url LIKE '%merchant_defined_data1=&lt;APP_ID&gt;%'</b>
+      <p>Attachments</p>
+      <b class="mono">{{ automation.attachments_dir }}</b>
     </div>
     <div>
-      <p>Transaction URL lookup</p>
-      <b class="mono">WHERE url LIKE '%&lt;TRANSACTION_ID&gt;%'</b>
+      <p>JSON output</p>
+      <b class="mono">{{ automation.new_json_dir }}</b>
     </div>
     <div>
       <p>Known skip</p>
-      <b class="mono">050625C19-CAC0351F-4D17-4132-AC05-D388CBEEB25A</b>
+      <b class="mono">{{ automation.bad_transactions[0] }}</b>
     </div>
   </div>
 </section>
 
-<section class="panel">
-  <h2 class="section-title">
-    <i data-lucide="trending-down"></i>
-    SLA Payment Reprocessing Queue
-  </h2>
-
-  <div class="list-stack">
-    {% for payment in payments %}
-    <article class="payment-card {{ payment.status }}" data-payment-card data-payment-id="{{ payment.id }}">
-      <div class="payment-head">
-        <div>
-          <div class="payment-title-wrap">
-            <h3>{{ payment.customer }}</h3>
-            <span class="mono token">{{ payment.id }}</span>
-          </div>
-          <p class="subtle">{{ payment.reason }}</p>
-          <p class="violation"><i data-lucide="triangle-alert"></i> {{ payment.sla_violation }}</p>
-        </div>
-
-        <div class="amount-wrap">
-          <p class="amount">${{ '{:,}'.format(payment.amount) }}</p>
-          <span class="status-pill {{ payment.status }}" data-status-badge>
-            {{ payment.status|upper }}
-          </span>
-        </div>
-      </div>
-
-      <div class="grid payment-meta cols-3">
-        <div><p>Incident ID</p><b class="mono">{{ payment.incident_id }}</b></div>
-        <div><p>Downtime</p><b class="mono">{{ payment.downtime }} minutes</b></div>
-        <div><p>Submitted</p><b class="mono">{{ payment.submitted_at }}</b></div>
-      </div>
-
-      <div class="button-row">
-        {% if payment.status in ['failed', 'pending'] %}
-        <button class="btn primary js-reprocess" data-payment-id="{{ payment.id }}">
-          <i data-lucide="refresh-cw"></i>
-          {% if payment.status == 'failed' %}Reprocess Payment{% else %}Approve & Process{% endif %}
-        </button>
-        {% endif %}
-        <button class="btn">View Details</button>
-      </div>
-
-      <div class="progress-track {% if payment.status != 'processing' %}hidden{% endif %}" data-progress>
-        <div class="progress-fill processing"></div>
-      </div>
-    </article>
-    {% endfor %}
+<section class="panel automation-results-panel">
+  <div class="section-row">
+    <h2 class="section-title">
+      <i data-lucide="terminal"></i>
+      Automation Run Output
+    </h2>
+    <span class="mono token" data-run-status>READY</span>
+  </div>
+  <div class="automation-results" data-run-results>
+    <div class="empty-results">
+      <i data-lucide="mouse-pointer-click"></i>
+      <p>Choose an email date or paste App IDs, then run the automation.</p>
+    </div>
   </div>
 </section>
 {% endblock %}

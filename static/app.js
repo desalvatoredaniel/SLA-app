@@ -468,55 +468,15 @@
   }
 
   function initSlaPayments() {
-    const buttons = Array.from(document.querySelectorAll('.js-reprocess'));
-
-    buttons.forEach((button) => {
-      button.addEventListener('click', async () => {
-        const paymentId = button.dataset.paymentId;
-        if (!paymentId) {
-          return;
-        }
-
-        button.disabled = true;
-
-        try {
-          const response = await fetch(`/api/payments/${paymentId}/reprocess`, { method: 'POST' });
-          const body = await response.json();
-          if (!response.ok || !body.ok) {
-            throw new Error('Request failed');
-          }
-
-          const card = document.querySelector(`[data-payment-card][data-payment-id="${paymentId}"]`);
-          if (!card) {
-            return;
-          }
-
-          card.classList.remove('failed', 'pending');
-          card.classList.add('processing');
-
-          const statusBadge = card.querySelector('[data-status-badge]');
-          if (statusBadge) {
-            statusBadge.textContent = 'PROCESSING';
-            statusBadge.className = 'status-pill processing';
-          }
-
-          const progress = card.querySelector('[data-progress]');
-          if (progress) {
-            progress.classList.remove('hidden');
-          }
-
-          button.remove();
-        } catch (error) {
-          button.disabled = false;
-        }
-      });
-    });
-
+    const emailRunForm = document.querySelector('[data-email-run-form]');
+    const emailDateInput = document.querySelector('[data-email-date-input]');
+    const appRunForm = document.querySelector('[data-app-run-form]');
     const appIdForm = document.querySelector('[data-app-id-form]');
     const appIdInput = document.querySelector('[data-app-id-input]');
-    const appIdResults = document.querySelector('[data-app-id-results]');
+    const runResults = document.querySelector('[data-run-results]');
+    const runStatus = document.querySelector('[data-run-status]');
 
-    if (!appIdForm || !appIdInput || !appIdResults) {
+    if (!runResults) {
       return;
     }
 
@@ -529,70 +489,157 @@
         .replaceAll("'", '&#039;');
     }
 
-    function renderEmpty(message) {
-      appIdResults.innerHTML = `
-        <div class="empty-results">
-          <i data-lucide="mouse-pointer-click"></i>
-          <p>${escapeHtml(message)}</p>
-        </div>
-      `;
+    function refreshIcons() {
       if (window.lucide) {
         window.lucide.createIcons();
       }
     }
 
-    function renderLookups(lookups) {
-      appIdResults.innerHTML = `
+    function setRunStatus(text, className) {
+      if (!runStatus) {
+        return;
+      }
+      runStatus.textContent = text;
+      runStatus.className = `mono token ${className || ''}`.trim();
+    }
+
+    function renderEmpty(message) {
+      runResults.innerHTML = `
+        <div class="empty-results">
+          <i data-lucide="mouse-pointer-click"></i>
+          <p>${escapeHtml(message)}</p>
+        </div>
+      `;
+      refreshIcons();
+    }
+
+    function renderError(message) {
+      setRunStatus('FAILED', 'error');
+      runResults.innerHTML = `
+        <div class="automation-error">
+          <i data-lucide="triangle-alert"></i>
+          <div>
+            <h3>Automation did not run</h3>
+            <p>${escapeHtml(message)}</p>
+          </div>
+        </div>
+      `;
+      refreshIcons();
+    }
+
+    function renderRunResult(body) {
+      const results = Array.isArray(body.results) ? body.results : [];
+      const attachments = Array.isArray(body.attachments) ? body.attachments : [];
+      setRunStatus('COMPLETE', 'success');
+      runResults.innerHTML = `
+        <div class="automation-result-summary">
+          <div>
+            <p>Mode</p>
+            <b class="mono">${escapeHtml(body.mode || 'automation')}</b>
+          </div>
+          <div>
+            <p>Requested</p>
+            <b class="mono">${escapeHtml(body.requested_count || 0)}</b>
+          </div>
+          <div>
+            <p>Processed</p>
+            <b class="mono">${escapeHtml(body.processed_count || 0)}</b>
+          </div>
+          <div>
+            <p>Skipped</p>
+            <b class="mono">${escapeHtml(body.skipped_count || 0)}</b>
+          </div>
+        </div>
+        <div class="automation-result-paths">
+          <p><span>Base</span><b class="mono">${escapeHtml(body.base_dir || '')}</b></p>
+          <p><span>Log</span><b class="mono">${escapeHtml(body.log_path || '')}</b></p>
+          ${
+            attachments.length
+              ? `<p><span>Attachments</span><b class="mono">${attachments.map(escapeHtml).join('<br />')}</b></p>`
+              : ''
+          }
+        </div>
         <div class="app-id-result-list">
-          ${lookups
+          ${results
             .map(
-              (lookup) => `
+              (item) => `
                 <article class="app-id-result">
                   <div class="app-id-result-head">
-                    <span class="mono token">${escapeHtml(lookup.app_id)}</span>
-                    <span class="status-pill processing">URL QUERY</span>
+                    <span class="mono token">${escapeHtml(item['Old App Number'] || item['Transaction ID'] || 'unknown')}</span>
+                    <span class="status-pill ${escapeHtml(item.Status === 'processed' ? 'completed' : item.Status || 'failed')}">
+                      ${escapeHtml(item.Status || 'unknown').toUpperCase()}
+                    </span>
                   </div>
-                  <code>${escapeHtml(lookup.sql)}</code>
-                  <code>parameter: ${escapeHtml(lookup.parameter)}</code>
-                  <p>${escapeHtml(lookup.next_step)}</p>
+                  <code>Transaction ID: ${escapeHtml(item['Transaction ID'] || '')}</code>
+                  <code>Application Number: ${escapeHtml(item['App Number'] || '')}</code>
+                  <p>${escapeHtml(item.Message || item['Base URL'] || 'Processed through the SLA payment automation flow.')}</p>
                 </article>
               `,
             )
             .join('')}
         </div>
       `;
+      refreshIcons();
     }
 
-    appIdForm.addEventListener('submit', async (event) => {
-      event.preventDefault();
-
-      const submitButton = appIdForm.querySelector('button[type="submit"]');
+    async function runAutomation(form, endpoint, payload) {
+      const submitButton = form ? form.querySelector('button[type="submit"]') : null;
       if (submitButton) {
         submitButton.disabled = true;
       }
 
+      setRunStatus('RUNNING', 'processing');
+      runResults.innerHTML = `
+        <div class="automation-running">
+          <div class="progress-track"><div class="progress-fill processing"></div></div>
+          <p>Running the SLA payment automation on the configured workstation dependencies.</p>
+        </div>
+      `;
+
       try {
-        const response = await fetch('/api/payments/app-id-query', {
+        const response = await fetch(endpoint, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ app_ids: appIdInput.value }),
+          body: JSON.stringify(payload),
         });
         const body = await response.json();
 
         if (!response.ok || !body.ok) {
-          throw new Error(body.error || 'Unable to build lookup queries');
+          throw new Error(body.error || 'Automation failed');
         }
 
-        renderLookups(body.lookups || []);
+        renderRunResult(body);
       } catch (error) {
-        renderEmpty(error.message || 'Unable to build lookup queries.');
+        renderError(error.message || 'Automation failed.');
       } finally {
         if (submitButton) {
           submitButton.disabled = false;
         }
       }
+    }
+
+    if (emailRunForm && emailDateInput) {
+      emailRunForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        await runAutomation(emailRunForm, '/api/payments/run-email-date', {
+          report_date: emailDateInput.value,
+        });
+      });
+    }
+
+    const appForm = appRunForm || appIdForm;
+    if (!appForm || !appIdInput) {
+      renderEmpty('Choose an email date or paste App IDs, then run the automation.');
+      return;
+    }
+
+    appForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      await runAutomation(appForm, '/api/payments/run-app-ids', {
+        app_ids: appIdInput.value,
+      });
     });
   }
 
