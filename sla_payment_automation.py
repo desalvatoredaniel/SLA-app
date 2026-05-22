@@ -110,6 +110,14 @@ def parse_report_date(raw_value: Any) -> datetime:
     raise ValueError("Report date must be YYYY-MM-DD or MM/DD/YYYY.")
 
 
+def build_report_subject(report_date: datetime) -> str:
+    date_str = report_date.strftime("%m/%d/%Y")
+    return (
+        f"PROD: SLA Payment Reports "
+        f"({date_str} 12:00:00 AM - {date_str} 11:59:59 PM)"
+    )
+
+
 def import_required_modules(*names: str) -> dict[str, Any]:
     modules: dict[str, Any] = {}
     missing: list[str] = []
@@ -414,11 +422,8 @@ class OutlookEmailReader:
         if report_date is None:
             report_date = datetime.today() - timedelta(days=1)
 
-        date_str = report_date.strftime("%m/%d/%Y")
-        subject_text = (
-            f"PROD: SLA Payment Reports "
-            f"({date_str} 12:00:00 AM - {date_str} 11:59:59 PM)"
-        )
+        subject_text = build_report_subject(report_date)
+        logging.info("Searching Outlook for subject: %s", subject_text)
         filter_criteria = f'@SQL="urn:schemas:httpmail:subject" LIKE \'%{subject_text}%\''
         messages = self.inbox.Items.Restrict(filter_criteria)
 
@@ -501,7 +506,8 @@ class SLAPaymentAutomationRunner:
         logging.info("Starting SLA Payment Automation from email date %s", report_date.strftime("%m/%d/%Y"))
         emit_progress(progress, "info", "Starting email date automation.", {"report_date": report_date.strftime("%m/%d/%Y")})
 
-        emit_progress(progress, "info", "Searching Outlook for SLA payment report email.")
+        subject_text = build_report_subject(report_date)
+        emit_progress(progress, "info", "Searching Outlook for SLA payment report email.", {"subject": subject_text})
         email_reader = OutlookEmailReader(ATTACHMENTS_DIR)
         attachments = email_reader.retrieve_attachments(report_date)
         emit_progress(progress, "info", "Downloaded Outlook attachments.", {"count": len(attachments)})
