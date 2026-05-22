@@ -1,214 +1,212 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="grid stats-grid cols-4">
-  <article class="panel stat total">
+<section class="sla-console">
+  <div class="sla-console-hero">
     <div>
-      <p class="label">Primary Run</p>
-      <p class="value cyan">Email Date</p>
+      <p class="console-kicker">Outlook + Excel + SQL Server + Oracle</p>
+      <h2>SLA Payment Automation</h2>
+      <p>Monitor the worker as it searches payment reports, resolves old and current app numbers, skips NA cases, and writes copy-ready JSON locally.</p>
     </div>
-    <i data-lucide="calendar-days"></i>
-  </article>
-  <article class="panel stat warning">
+    <div class="console-live-badge">
+      <span></span>
+      <b data-run-status>READY</b>
+    </div>
+  </div>
+
+  <div class="worker-metrics" aria-label="SLA payment automation status summary">
     <div>
-      <p class="label">Manual Run</p>
-      <p class="value yellow">App IDs</p>
+      <span>Email Date Run</span>
+      <b>Outlook XLSX</b>
     </div>
-    <i data-lucide="list-plus"></i>
-  </article>
-  <article class="panel stat processing">
     <div>
-      <p class="label">Database Mode</p>
-      <p class="value blue">Read Only</p>
+      <span>Manual App IDs</span>
+      <b>Old + Current</b>
     </div>
-    <i data-lucide="database"></i>
-  </article>
-  <article class="panel stat healthy">
     <div>
-      <p class="label">Output</p>
-      <p class="value green">Clean JSON</p>
+      <span>Ignore Rule</span>
+      <b>Current starts NA</b>
     </div>
-    <i data-lucide="file-check-2"></i>
-  </article>
+    <div>
+      <span>DB Policy</span>
+      <b>Read Only</b>
+    </div>
+  </div>
+
+  <div class="virtual-worker-grid">
+    <aside class="worker-queue-panel">
+      <div class="console-panel-head">
+        <div>
+          <p>Input Queue</p>
+          <h3>Start a worker run</h3>
+        </div>
+        <i data-lucide="list-restart"></i>
+      </div>
+
+      <form class="worker-run-card" data-email-run-form>
+        <label>
+          <span>Email report date</span>
+          <input name="report_date" type="date" data-email-date-input />
+        </label>
+        <div class="worker-run-actions">
+          <button class="btn" type="button" data-outlook-test-button>
+            <i data-lucide="mail-check"></i>
+            Test Outlook
+          </button>
+          <button class="btn primary" type="submit">
+            <i data-lucide="play"></i>
+            Run Email Date
+          </button>
+        </div>
+      </form>
+
+      <form class="worker-run-card" data-app-run-form>
+        <label>
+          <span>Manual App IDs</span>
+          <textarea
+            name="app_ids"
+            placeholder="OLD12345&#10;OLD12346&#10;OLD12347"
+            data-app-id-input
+          ></textarea>
+        </label>
+        <button class="btn primary" type="submit">
+          <i data-lucide="bot"></i>
+          Run App ID Worker
+        </button>
+      </form>
+
+      <div class="queue-preview" aria-label="Example worker queue">
+        <div class="queue-preview-row active">
+          <span></span>
+          <div>
+            <b>OLD APP</b>
+            <p>Resolve current number first</p>
+          </div>
+          <em>ACTIVE</em>
+        </div>
+        <div class="queue-preview-row warning">
+          <span></span>
+          <div>
+            <b>CURRENT NA</b>
+            <p>Ignored before JSON generation</p>
+          </div>
+          <em>SKIP</em>
+        </div>
+        <div class="queue-preview-row">
+          <span></span>
+          <div>
+            <b>TRANSACTION ID</b>
+            <p>Loaded from Outlook Excel</p>
+          </div>
+          <em>WAIT</em>
+        </div>
+      </div>
+    </aside>
+
+    <section class="worker-stage-panel" aria-label="Virtual worker automation stage">
+      <div class="console-panel-head">
+        <div>
+          <p>Virtual Worker</p>
+          <h3>Live processing lane</h3>
+        </div>
+        <i data-lucide="activity"></i>
+      </div>
+
+      <div class="worker-stage">
+        <div class="worker-terminal left">
+          <i data-lucide="search-code"></i>
+          <span>URL lookup</span>
+        </div>
+        <div class="worker-terminal right">
+          <i data-lucide="file-json"></i>
+          <span>Clean JSON</span>
+        </div>
+        <div class="virtual-worker" aria-hidden="true">
+          <span class="worker-antenna"></span>
+          <span class="worker-head"><i></i></span>
+          <span class="worker-body"><i></i></span>
+          <span class="worker-arm left"></span>
+          <span class="worker-arm right"></span>
+        </div>
+        <span class="worker-data-pulse pulse-one"></span>
+        <span class="worker-data-pulse pulse-two"></span>
+      </div>
+
+      <div class="worker-steps">
+        <div class="worker-step active">
+          <span>1</span>
+          <b>Outlook COM</b>
+          <p>Classic profile opens</p>
+        </div>
+        <div class="worker-step active">
+          <span>2</span>
+          <b>Excel Reader</b>
+          <p>Transaction IDs collected</p>
+        </div>
+        <div class="worker-step">
+          <span>3</span>
+          <b>SQL URL Query</b>
+          <p>Trusted connection</p>
+        </div>
+        <div class="worker-step">
+          <span>4</span>
+          <b>Oracle JSON</b>
+          <p>Select only</p>
+        </div>
+        <div class="worker-step">
+          <span>5</span>
+          <b>Local Output</b>
+          <p>Copy clean JSON</p>
+        </div>
+      </div>
+    </section>
+
+    <aside class="worker-inspector-panel">
+      <div class="console-panel-head">
+        <div>
+          <p>Run Inspector</p>
+          <h3>Script boundaries</h3>
+        </div>
+        <i data-lucide="shield-check"></i>
+      </div>
+
+      <div class="inspector-list">
+        <div>
+          <span>Base folder</span>
+          <b class="mono">{{ automation.base_dir }}</b>
+        </div>
+        <div>
+          <span>Attachments</span>
+          <b class="mono">{{ automation.attachments_dir }}</b>
+        </div>
+        <div>
+          <span>Clean JSON output</span>
+          <b class="mono">{{ automation.new_json_dir }}</b>
+        </div>
+        <div>
+          <span>Database mode</span>
+          <b class="mono">{{ automation.database_mode }}</b>
+        </div>
+        <div>
+          <span>Known skip</span>
+          <b class="mono">{{ automation.bad_transactions[0] }}</b>
+        </div>
+      </div>
+    </aside>
+  </div>
 </section>
 
-<section class="panel payment-automation">
-  <div class="section-row">
-    <h2 class="section-title">
-      <i data-lucide="workflow"></i>
-      SLA Payment Automation
-    </h2>
-    <span class="mono token">Outlook + Excel + SQL Server + Oracle</span>
-  </div>
-
-  <div class="automation-visual" aria-label="SLA payment automation flow">
-    <div class="automation-branch excel">
-      <span class="flow-label">Email report run</span>
-      <div class="flow-node">
-        <i data-lucide="calendar-days"></i>
-        <div>
-          <h3>Email Date</h3>
-          <p>Build PROD report subject for that day</p>
-        </div>
-      </div>
-      <div class="flow-link"><span></span></div>
-      <div class="flow-node">
-        <i data-lucide="mail"></i>
-        <div>
-          <h3>Outlook Attachments</h3>
-          <p>Save XLSX reports to attachments</p>
-        </div>
-      </div>
-      <div class="flow-link"><span></span></div>
-      <div class="flow-node active">
-        <i data-lucide="file-spreadsheet"></i>
-        <div>
-          <h3>Transaction IDs</h3>
-          <p>Read Excel Transaction ID column</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="automation-branch manual">
-      <span class="flow-label">Manual app id run</span>
-      <div class="flow-node manual">
-        <i data-lucide="list-plus"></i>
-        <div>
-          <h3>App IDs</h3>
-          <p>Paste old application numbers</p>
-        </div>
-      </div>
-      <div class="flow-link"><span></span></div>
-      <div class="flow-node active">
-        <i data-lucide="search-code"></i>
-        <div>
-          <h3>URL Lookup</h3>
-          <p>WHERE url LIKE merchant_defined_data1</p>
-        </div>
-      </div>
-      <div class="flow-link"><span></span></div>
-      <div class="flow-node">
-        <i data-lucide="fingerprint"></i>
-        <div>
-          <h3>Same Processor</h3>
-          <p>Run JSON backup and cleanup per App ID</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="automation-shared">
-      <div class="shared-line"><span></span></div>
-      <div class="flow-node sql">
-        <i data-lucide="database"></i>
-        <div>
-          <h3>SQL Server</h3>
-          <p>Prod_SharedServices.metrics.Request</p>
-        </div>
-      </div>
-      <div class="flow-link vertical"><span></span></div>
-      <div class="flow-node oracle">
-        <i data-lucide="archive-restore"></i>
-        <div>
-          <h3>Oracle JSON Backup</h3>
-          <p>BFLOWNER.APPLICATION</p>
-        </div>
-      </div>
-      <div class="flow-link vertical"><span></span></div>
-      <div class="flow-node clean">
-        <i data-lucide="sparkles"></i>
-        <div>
-          <h3>Clean JSON</h3>
-          <p>Write file only, no DB upload</p>
-        </div>
-      </div>
-      <div class="flow-link vertical"><span></span></div>
-      <div class="flow-node log">
-        <i data-lucide="file-check-2"></i>
-        <div>
-          <h3>Write Audit</h3>
-          <p>reprocessed_transactions.jsonl</p>
-        </div>
-      </div>
-    </div>
-
-    <span class="data-packet packet-a"></span>
-    <span class="data-packet packet-b"></span>
-    <span class="data-packet packet-c"></span>
-  </div>
-
-  <div class="automation-workspace">
-    <form class="automation-run-form" data-email-run-form>
-      <label>
-        <span>Email report date</span>
-        <input name="report_date" type="date" data-email-date-input />
-      </label>
-      <p class="manual-hint">Runs the Outlook attachment download, Excel Transaction ID read, SQL URL lookup, Oracle JSON backup, cleanup, and JSONL audit flow.</p>
-      <div class="button-row">
-        <button class="btn" type="button" data-outlook-test-button>
-          <i data-lucide="mail-check"></i>
-          Test Outlook Connection
-        </button>
-        <button class="btn primary" type="submit">
-          <i data-lucide="play"></i>
-          Run Email Date Automation
-        </button>
-      </div>
-    </form>
-
-    <form class="automation-run-form" data-app-run-form>
-      <label>
-        <span>Manual App IDs</span>
-        <textarea
-          name="app_ids"
-          placeholder="Enter old application IDs, separated by lines, commas, or spaces"
-          data-app-id-input
-        ></textarea>
-      </label>
-      <p class="manual-hint">Uses each App ID as OLD_APPLICATION_NUMBER, runs the matching Request URL query, then writes the cleaned JSON file for manual DB upload.</p>
-      <div class="button-row">
-        <button class="btn primary" type="submit">
-          <i data-lucide="play"></i>
-          Run App ID Automation
-        </button>
-      </div>
-    </form>
-  </div>
-
-  <div class="process-systems">
+<section class="worker-output-console">
+  <div class="console-panel-head">
     <div>
-      <p>Base folder</p>
-      <b class="mono">{{ automation.base_dir }}</b>
+      <p>Automation Run Output</p>
+      <h3>Live log and generated JSON</h3>
     </div>
-    <div>
-      <p>Attachments</p>
-      <b class="mono">{{ automation.attachments_dir }}</b>
-    </div>
-    <div>
-      <p>App-local JSON output</p>
-      <b class="mono">{{ automation.new_json_dir }}</b>
-    </div>
-    <div>
-      <p>DB write policy</p>
-      <b class="mono">{{ automation.database_mode }}</b>
-    </div>
-    <div>
-      <p>Known skip</p>
-      <b class="mono">{{ automation.bad_transactions[0] }}</b>
-    </div>
-  </div>
-</section>
-
-<section class="panel automation-results-panel">
-  <div class="section-row">
-    <h2 class="section-title">
-      <i data-lucide="terminal"></i>
-      Automation Run Output
-    </h2>
-    <span class="mono token" data-run-status>READY</span>
+    <i data-lucide="terminal"></i>
   </div>
   <div class="automation-results" data-run-results>
-    <div class="empty-results">
-      <i data-lucide="mouse-pointer-click"></i>
-      <p>Choose an email date or paste App IDs, then run the automation.</p>
+    <div class="empty-results worker-empty-state">
+      <i data-lucide="bot"></i>
+      <p>The virtual worker is idle. Start an email date run or paste App IDs to watch the script progress.</p>
     </div>
   </div>
 </section>

@@ -570,14 +570,85 @@
       });
     }
 
+    function getWorkerStepIndex(events) {
+      const text = (Array.isArray(events) ? events : [])
+        .map((event) => `${event.message || ''} ${JSON.stringify(event.details || {})}`)
+        .join(' ')
+        .toLowerCase();
+
+      if (text.includes('clean json') || text.includes('json written') || text.includes('automation complete')) {
+        return 5;
+      }
+      if (text.includes('oracle') || text.includes('json backup')) {
+        return 4;
+      }
+      if (text.includes('sql') || text.includes('url lookup') || text.includes('trusted connection')) {
+        return 3;
+      }
+      if (text.includes('excel') || text.includes('transaction ids')) {
+        return 2;
+      }
+      if (text.includes('outlook') || text.includes('email') || text.includes('com')) {
+        return 1;
+      }
+      return 0;
+    }
+
+    function renderWorkerStepRail(events) {
+      const activeStep = getWorkerStepIndex(events);
+      const steps = [
+        ['Outlook COM', 'Classic profile'],
+        ['Excel Reader', 'Transaction IDs'],
+        ['SQL URL Query', 'Trusted auth'],
+        ['Oracle JSON', 'Select only'],
+        ['Local Output', 'Copy JSON'],
+      ];
+
+      return `
+        <div class="worker-steps">
+          ${steps
+            .map(
+              (step, index) => `
+                <div class="worker-step ${index + 1 <= activeStep ? 'active' : ''}">
+                  <span>${index + 1}</span>
+                  <b>${escapeHtml(step[0])}</b>
+                  <p>${escapeHtml(step[1])}</p>
+                </div>
+              `,
+            )
+            .join('')}
+        </div>
+      `;
+    }
+
+    function renderLiveWorkerRun(run, events, title, subtitle) {
+      return `
+        <div class="live-worker-run">
+          <div class="live-worker-status">
+            <div>
+              <h4>${escapeHtml(title)}</h4>
+              <p>${escapeHtml(subtitle)}</p>
+            </div>
+            <div class="live-worker-mini" aria-hidden="true"></div>
+            ${renderWorkerStepRail(events)}
+          </div>
+          <div class="live-worker-events">
+            <p class="mono">Run ID: ${escapeHtml(run.id || '')}</p>
+            ${renderEventLog(events)}
+          </div>
+        </div>
+      `;
+    }
+
     function renderRunProgress(run) {
       setRunStatus((run.status || 'RUNNING').toUpperCase(), run.status === 'failed' ? 'error' : 'processing');
       runResults.innerHTML = `
-        <div class="automation-running">
-          <div class="progress-track"><div class="progress-fill processing"></div></div>
-          <p>Run ID: <span class="mono">${escapeHtml(run.id || '')}</span></p>
-        </div>
-        ${renderEventLog(run.events)}
+        ${renderLiveWorkerRun(
+          run,
+          run.events,
+          'Worker is processing',
+          'The automation is moving through Outlook, Excel, SQL, Oracle, and local JSON output.',
+        )}
       `;
       refreshIcons();
     }
@@ -616,7 +687,12 @@
               : ''
           }
         </div>
-        ${renderEventLog(events)}
+        ${renderLiveWorkerRun(
+          { id: body.mode || 'completed' },
+          events,
+          'Worker run complete',
+          'Review every processed app, ignored NA case, and clean JSON output below.',
+        )}
         <div class="app-id-result-list">
           ${results
             .map(
@@ -629,7 +705,8 @@
                     </span>
                   </div>
                   <code>Transaction ID: ${escapeHtml(item['Transaction ID'] || '')}</code>
-                  <code>Application Number: ${escapeHtml(item['App Number'] || '')}</code>
+                  <code>Old App Number: ${escapeHtml(item['Old App Number'] || '')}</code>
+                  <code>Current App Number: ${escapeHtml(item['App Number'] || '')}</code>
                   <code>Clean JSON Path: ${escapeHtml(item['Clean JSON Path'] || '')}</code>
                   <code>Backup JSON Path: ${escapeHtml(item['Backup JSON Path'] || '')}</code>
                   ${
@@ -730,10 +807,12 @@
 
       setRunStatus('RUNNING', 'processing');
       runResults.innerHTML = `
-        <div class="automation-running">
-          <div class="progress-track"><div class="progress-fill processing"></div></div>
-          <p>Starting the SLA payment automation and opening the live log stream.</p>
-        </div>
+        ${renderLiveWorkerRun(
+          { id: 'starting' },
+          [{ level: 'info', message: 'Starting the SLA payment automation and opening the live log stream.' }],
+          'Worker is starting',
+          'The first events will appear as soon as the backend run is queued.',
+        )}
       `;
 
       try {

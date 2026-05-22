@@ -368,9 +368,12 @@ class SLAPayment:
             row = cursor.fetchone()
 
         if row:
-            self.app_number = row[0]
+            self.app_number = str(row[0]) if row[0] is not None else None
 
         return self.app_number
+
+    def current_app_number_is_ignored(self) -> bool:
+        return str(self.app_number or "").upper().startswith("NA")
 
     def process_from_transaction(self) -> "SLAPayment":
         self.get_base_url_by_transaction()
@@ -381,9 +384,19 @@ class SLAPayment:
         return self
 
     def process_from_app_id(self) -> "SLAPayment":
+        self.get_app_number()
+        if self.current_app_number_is_ignored():
+            self.status = "ignored"
+            self.message = "Current app number starts with NA; no JSON generated."
+            logging.info(
+                "Ignoring App ID %s because current app number is %s",
+                self.old_app_number,
+                self.app_number,
+            )
+            return self
+
         self.get_base_url_by_app_id()
         self.get_json_backup()
-        self.get_app_number()
         self.status = "processed" if self.app_number or self.json_backup else "missing"
         return self
 
@@ -806,22 +819,34 @@ class SLAPaymentAutomationRunner:
                 payment = SLAPayment(old_app_number=app_id, sql_conn=sql_conn, oracle_conn=oracle_conn)
                 try:
                     payment.process_from_app_id()
-                    logging.info(
-                        "Processed App ID: %s | Transaction: %s | App: %s",
-                        app_id,
-                        payment.transaction_id,
-                        payment.app_number,
-                    )
-                    emit_progress(
-                        progress,
-                        "success",
-                        "App ID processed and clean JSON written.",
-                        {
-                            "app_id": app_id,
-                            "transaction_id": payment.transaction_id,
-                            "clean_json_path": str(payment.clean_json_path) if payment.clean_json_path else "",
-                        },
-                    )
+                    if payment.status == "ignored":
+                        emit_progress(
+                            progress,
+                            "warning",
+                            "App ID ignored because current app number starts with NA.",
+                            {
+                                "old_app_number": payment.old_app_number,
+                                "current_app_number": payment.app_number,
+                            },
+                        )
+                    else:
+                        logging.info(
+                            "Processed App ID: %s | Transaction: %s | App: %s",
+                            app_id,
+                            payment.transaction_id,
+                            payment.app_number,
+                        )
+                        emit_progress(
+                            progress,
+                            "success",
+                            "App ID processed and clean JSON written.",
+                            {
+                                "old_app_number": payment.old_app_number,
+                                "current_app_number": payment.app_number,
+                                "transaction_id": payment.transaction_id,
+                                "clean_json_path": str(payment.clean_json_path) if payment.clean_json_path else "",
+                            },
+                        )
                 except Exception as exc:
                     payment.status = "failed"
                     payment.message = str(exc)
@@ -903,6 +928,7 @@ class SLAPaymentAutomationRunner:
         skipped_transactions: list[str],
         log_path: Path,
     ) -> dict[str, Any]:
+        ignored_count = sum(1 for payment in processed_transactions if payment.status == "ignored")
         return {
             "ok": True,
             "mode": mode,
@@ -912,8 +938,8 @@ class SLAPaymentAutomationRunner:
             "clean_json_dir": str(NEW_JSON_DIR),
             "attachments": [str(path) for path in attachments],
             "requested_count": len(requested_items),
-            "processed_count": len(processed_transactions),
-            "skipped_count": len(skipped_transactions),
+            "processed_count": len(processed_transactions) - ignored_count,
+            "skipped_count": len(skipped_transactions) + ignored_count,
             "skipped_transactions": skipped_transactions,
             "log_path": str(log_path),
             "results": [payment.to_log_dict() | {"Message": payment.message} for payment in processed_transactions],
