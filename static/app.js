@@ -681,6 +681,11 @@
               .map((item, index) => {
                 const status = item.Status || 'unknown';
                 const hasJson = Boolean(item['Clean JSON']);
+                const copyableFields = [
+                  ['Base URL', item['Base URL'] || 'Not found'],
+                  ['Clean JSON', item['Clean JSON Path'] || 'Not generated'],
+                  ['Backup JSON', item['Backup JSON Path'] || 'Not generated'],
+                ];
                 return `
                   <article class="processed-app-card ${escapeHtml(statusClass(status))}">
                     <div class="processed-app-topline">
@@ -707,8 +712,28 @@
                       </div>
                     </div>
                     <div class="processed-app-paths">
-                      <p><span>Clean JSON</span><b class="mono">${escapeHtml(item['Clean JSON Path'] || 'Not generated')}</b></p>
-                      <p><span>Backup JSON</span><b class="mono">${escapeHtml(item['Backup JSON Path'] || 'Not generated')}</b></p>
+                      ${copyableFields
+                        .map((field) => {
+                          const label = field[0];
+                          const value = field[1];
+                          const isCopyable = value && !['Not found', 'Not generated'].includes(value);
+                          return `
+                            <div class="copy-field">
+                              <span>${escapeHtml(label)}</span>
+                              <code class="mono">${escapeHtml(value)}</code>
+                              ${
+                                isCopyable
+                                  ? `
+                                    <button class="icon-copy-button" type="button" data-copy-value="${escapeHtml(value)}" title="Copy ${escapeHtml(label)}">
+                                      <i data-lucide="copy"></i>
+                                    </button>
+                                  `
+                                  : '<em></em>'
+                              }
+                            </div>
+                          `;
+                        })
+                        .join('')}
                     </div>
                     ${
                       hasJson
@@ -839,6 +864,19 @@
     }
 
     runResults.addEventListener('click', async (event) => {
+      const valueButton = event.target instanceof Element ? event.target.closest('[data-copy-value]') : null;
+      if (valueButton) {
+        try {
+          await navigator.clipboard.writeText(valueButton.getAttribute('data-copy-value') || '');
+          valueButton.classList.add('copied');
+          valueButton.innerHTML = '<i data-lucide="check"></i>';
+          refreshIcons();
+        } catch (error) {
+          valueButton.classList.add('copy-failed');
+        }
+        return;
+      }
+
       const button = event.target instanceof Element ? event.target.closest('[data-copy-json]') : null;
       if (!button) {
         return;

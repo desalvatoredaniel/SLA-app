@@ -1005,6 +1005,7 @@ body {
   justify-content: space-between;
   align-items: center;
   gap: 0.65rem;
+  min-width: 0;
 }
 
 .clean-json-head p {
@@ -1074,6 +1075,7 @@ body {
   display: grid;
   gap: 0.72rem;
   min-width: 0;
+  width: 100%;
   max-width: 100%;
   overflow: hidden;
   padding: 0.85rem;
@@ -1173,26 +1175,77 @@ body {
 .processed-app-paths {
   display: grid;
   gap: 0.38rem;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   padding: 0.62rem;
   border: 1px solid rgba(36, 68, 91, 0.62);
   border-radius: 0.58rem;
   background: rgba(3, 9, 17, 0.34);
 }
 
-.processed-app-paths p {
+.processed-app-paths p,
+.copy-field {
   display: grid;
-  grid-template-columns: minmax(6rem, 0.26fr) minmax(0, 1fr);
+  grid-template-columns: minmax(5.5rem, 0.18fr) minmax(0, 1fr) auto;
+  gap: 0.55rem;
   margin: 0;
-  align-items: start;
-}
-
-.processed-app-paths b {
+  align-items: center;
   min-width: 0;
   max-width: 100%;
+  overflow: hidden;
+}
+
+.processed-app-paths b,
+.copy-field code {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   color: #bae6fd;
   font-size: 0.66rem;
   text-align: left;
   overflow-wrap: anywhere;
+  word-break: break-all;
+  white-space: normal;
+}
+
+.copy-field span {
+  min-width: 0;
+}
+
+.copy-field em {
+  width: 1.75rem;
+}
+
+.icon-copy-button {
+  display: inline-grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px solid rgba(53, 211, 255, 0.28);
+  border-radius: 0.45rem;
+  background: rgba(37, 99, 235, 0.16);
+  color: #9ee9ff;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.icon-copy-button:hover,
+.icon-copy-button.copied {
+  border-color: rgba(73, 228, 138, 0.5);
+  background: rgba(34, 197, 94, 0.18);
+  color: #8ff0b6;
+}
+
+.icon-copy-button.copy-failed {
+  border-color: rgba(248, 113, 113, 0.5);
+  color: #fca5a5;
+}
+
+.icon-copy-button i {
+  width: 0.95rem;
+  height: 0.95rem;
 }
 
 .processed-app-message {
@@ -2325,6 +2378,14 @@ body {
   .app-number-pair,
   .processed-app-paths p {
     grid-template-columns: 1fr;
+  }
+
+  .copy-field {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .copy-field span {
+    grid-column: 1 / -1;
   }
 }
 
