@@ -410,34 +410,96 @@ class SLAPayment:
 
 
 class OutlookEmailReader:
-    def __init__(self, attachment_folder_path: Path):
+    def __init__(self, attachment_folder_path: Path, progress: ProgressCallback | None = None):
+        emit_progress(progress, "info", "Initializing Outlook COM connection.")
         modules = import_required_modules("win32com.client")
         win32_client = modules["win32com.client"]
         self.outlook_app = win32_client.Dispatch("Outlook.Application")
         self.namespace = self.outlook_app.GetNamespace("MAPI")
         self.inbox = self.namespace.GetDefaultFolder(6)
         self.attachment_folder_path = Path(attachment_folder_path)
+        emit_progress(progress, "info", "Outlook inbox initialized.")
 
-    def retrieve_attachments(self, report_date: datetime | None = None) -> list[Path]:
+    def retrieve_attachments(self, report_date: datetime | None = None, progress: ProgressCallback | None = None) -> list[Path]:
         if report_date is None:
             report_date = datetime.today() - timedelta(days=1)
 
         subject_text = build_report_subject(report_date)
         logging.info("Searching Outlook for subject: %s", subject_text)
         filter_criteria = f'@SQL="urn:schemas:httpmail:subject" LIKE \'%{subject_text}%\''
-        messages = self.inbox.Items.Restrict(filter_criteria)
+        emit_progress(
+            progress,
+            "info",
+            "Applying Outlook subject filter.",
+            {"subject": subject_text, "filter": filter_criteria},
+        )
+        try:
+            messages = self.inbox.Items.Restrict(filter_criteria)
+        except Exception as exc:
+            logging.exception("Outlook Restrict failed for subject %s: %s", subject_text, exc)
+            emit_progress(progress, "error", "Outlook subject search failed.", {"subject": subject_text, "error": str(exc)})
+            raise RuntimeError(f"Outlook subject search failed for '{subject_text}': {exc}") from exc
+
+        message_count: int | None = None
+        try:
+            message_count = int(messages.Count)
+            emit_progress(progress, "info", "Outlook subject search returned messages.", {"count": message_count})
+        except Exception as exc:
+            logging.warning("Could not read Outlook message count for subject %s: %s", subject_text, exc)
+            emit_progress(progress, "warning", "Could not read Outlook message count.", {"error": str(exc)})
 
         saved_files: list[Path] = []
-        for message in messages:
-            logging.info("Found email: %s", message.Subject)
-            for attachment in message.Attachments:
-                save_path = self.attachment_folder_path / attachment.FileName
-                attachment.SaveAsFile(str(save_path))
-                saved_files.append(save_path)
-                logging.info("Saved attachment: %s", save_path)
+        found_messages = 0
+        emit_progress(progress, "info", "Beginning Outlook message iteration.", {"subject": subject_text})
+        try:
+            for message in messages:
+                found_messages += 1
+                message_subject = str(getattr(message, "Subject", ""))
+                logging.info("Found email: %s", message_subject)
+                emit_progress(
+                    progress,
+                    "info",
+                    "Found matching Outlook email.",
+                    {"index": found_messages, "subject": message_subject},
+                )
+
+                attachments = getattr(message, "Attachments", None)
+                attachment_count: int | None = None
+                try:
+                    attachment_count = int(attachments.Count) if attachments is not None else 0
+                    emit_progress(progress, "info", "Email attachment count read.", {"count": attachment_count})
+                except Exception as exc:
+                    logging.warning("Could not read attachment count for %s: %s", message_subject, exc)
+                    emit_progress(progress, "warning", "Could not read email attachment count.", {"error": str(exc)})
+
+                for attachment in attachments:
+                    try:
+                        save_path = self.attachment_folder_path / attachment.FileName
+                        emit_progress(progress, "info", "Saving Outlook attachment.", {"path": str(save_path)})
+                        attachment.SaveAsFile(str(save_path))
+                        saved_files.append(save_path)
+                        logging.info("Saved attachment: %s", save_path)
+                        emit_progress(progress, "success", "Saved Outlook attachment.", {"path": str(save_path)})
+                    except Exception as exc:
+                        logging.exception("Failed saving Outlook attachment for subject %s: %s", message_subject, exc)
+                        emit_progress(progress, "error", "Failed saving Outlook attachment.", {"error": str(exc)})
+                        raise RuntimeError(f"Failed saving Outlook attachment for '{message_subject}': {exc}") from exc
+        except Exception:
+            raise
 
         if not saved_files:
-            logging.warning("No attachments found for subject: %s", subject_text)
+            if message_count == 0 or found_messages == 0:
+                message = f"No Outlook email found for subject: {subject_text}"
+            else:
+                message = f"Matching Outlook email found, but no attachments were saved for subject: {subject_text}"
+            logging.warning(message)
+            emit_progress(
+                progress,
+                "error",
+                "No payment report attachments found.",
+                {"subject": subject_text, "message_count": message_count, "iterated_messages": found_messages},
+            )
+            raise FileNotFoundError(message)
 
         return saved_files
 
@@ -508,8 +570,8 @@ class SLAPaymentAutomationRunner:
 
         subject_text = build_report_subject(report_date)
         emit_progress(progress, "info", "Searching Outlook for SLA payment report email.", {"subject": subject_text})
-        email_reader = OutlookEmailReader(ATTACHMENTS_DIR)
-        attachments = email_reader.retrieve_attachments(report_date)
+        email_reader = OutlookEmailReader(ATTACHMENTS_DIR, progress=progress)
+        attachments = email_reader.retrieve_attachments(report_date, progress=progress)
         emit_progress(progress, "info", "Downloaded Outlook attachments.", {"count": len(attachments)})
 
         emit_progress(progress, "info", "Reading XLSX reports for Transaction ID values.")
