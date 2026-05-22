@@ -3231,6 +3231,7 @@ def _run_payment_automation_job(run_id: str, worker: Any) -> None:
 
             pythoncom = pythoncom_module
             pythoncom.CoInitialize()
+            _append_payment_automation_event(run_id, "info", "Python COM initialized for automation run thread.")
         except ImportError:
             pythoncom = None
 

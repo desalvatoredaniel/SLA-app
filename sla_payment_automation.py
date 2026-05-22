@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-import queue
 import re
-import threading
 from importlib import import_module
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -20,7 +18,6 @@ BACKUP_DIR = BASE_DIR / "json_back_up"
 NEW_JSON_DIR = BASE_DIR / "new_json"
 LOG_DIR = BASE_DIR / "logs"
 DATABASE_MODE = "read_only_selects_only"
-OUTLOOK_TIMEOUT_SECONDS = 90
 OUTLOOK_CONNECT_MODE = "dispatch"
 
 BAD_TRANSACTIONS = {
@@ -415,8 +412,10 @@ class SLAPayment:
 class OutlookEmailReader:
     def __init__(self, attachment_folder_path: Path, progress: ProgressCallback | None = None):
         emit_progress(progress, "info", "Initializing Outlook COM connection.")
+        emit_progress(progress, "info", "Loading win32com.client module.")
         modules = import_required_modules("win32com.client")
         win32_client = modules["win32com.client"]
+        emit_progress(progress, "info", "win32com.client module loaded.")
         self.outlook_app = self._connect_outlook_app(win32_client, progress)
         emit_progress(progress, "info", "Opening Outlook MAPI namespace.")
         self.namespace = self.outlook_app.GetNamespace("MAPI")
@@ -535,62 +534,6 @@ class OutlookEmailReader:
         return saved_files
 
 
-def retrieve_outlook_attachments_with_timeout(
-    report_date: datetime,
-    progress: ProgressCallback | None = None,
-) -> list[Path]:
-    result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
-
-    def worker() -> None:
-        pythoncom = None
-        try:
-            try:
-                pythoncom = import_module("pythoncom")
-                pythoncom.CoInitialize()
-                emit_progress(progress, "info", "Initialized COM for Outlook worker thread.")
-            except ImportError:
-                pythoncom = None
-
-            reader = OutlookEmailReader(ATTACHMENTS_DIR, progress=progress)
-            result_queue.put(("ok", reader.retrieve_attachments(report_date, progress=progress)))
-        except Exception as exc:
-            result_queue.put(("error", exc))
-        finally:
-            if pythoncom is not None:
-                pythoncom.CoUninitialize()
-
-    emit_progress(
-        progress,
-        "info",
-        "Starting timeout-protected Outlook attachment retrieval.",
-        {"timeout_seconds": OUTLOOK_TIMEOUT_SECONDS},
-    )
-    thread = threading.Thread(target=worker, name="sla-payment-outlook-worker", daemon=True)
-    thread.start()
-    thread.join(OUTLOOK_TIMEOUT_SECONDS)
-
-    if thread.is_alive():
-        message = (
-            "Outlook did not respond while initializing/searching for the SLA payment report. "
-            "Check that Outlook is open, the correct profile is signed in, no modal/security prompt is blocking Outlook, "
-            f"and try again. Timeout: {OUTLOOK_TIMEOUT_SECONDS} seconds."
-        )
-        logging.error(message)
-        emit_progress(progress, "error", "Outlook attachment retrieval timed out.", {"timeout_seconds": OUTLOOK_TIMEOUT_SECONDS})
-        raise TimeoutError(message)
-
-    if result_queue.empty():
-        message = "Outlook attachment retrieval exited without returning a result."
-        logging.error(message)
-        emit_progress(progress, "error", message)
-        raise RuntimeError(message)
-
-    status, value = result_queue.get()
-    if status == "error":
-        raise value
-    return value
-
-
 class ExcelReader:
     def __init__(self, folder_path: Path):
         self.folder_path = Path(folder_path)
@@ -657,7 +600,9 @@ class SLAPaymentAutomationRunner:
 
         subject_text = build_report_subject(report_date)
         emit_progress(progress, "info", "Searching Outlook for SLA payment report email.", {"subject": subject_text})
-        attachments = retrieve_outlook_attachments_with_timeout(report_date, progress=progress)
+        emit_progress(progress, "info", "Creating Outlook reader using original script Dispatch path.")
+        email_reader = OutlookEmailReader(ATTACHMENTS_DIR, progress=progress)
+        attachments = email_reader.retrieve_attachments(report_date, progress=progress)
         emit_progress(progress, "info", "Downloaded Outlook attachments.", {"count": len(attachments)})
 
         emit_progress(progress, "info", "Reading XLSX reports for Transaction ID values.")
@@ -665,55 +610,39 @@ class SLAPaymentAutomationRunner:
         transactions = excel_reader.read_reports()
         emit_progress(progress, "info", "Collected unique transaction IDs.", {"count": len(transactions)})
 
-        processed_transactions: list[SLAPayment] = []
-        skipped_transactions: list[str] = []
-        emit_progress(progress, "info", "Opening SQL Server and Oracle read-only connections.")
-        with get_sql_connection() as sql_conn, get_oracle_connection() as oracle_conn:
-            for index, transaction_id in enumerate(transactions, start=1):
-                emit_progress(
-                    progress,
-                    "info",
-                    "Processing transaction.",
-                    {"index": index, "total": len(transactions), "transaction_id": transaction_id},
-                )
-                if transaction_id in BAD_TRANSACTIONS:
-                    skipped_transactions.append(transaction_id)
-                    logging.warning("Skipping bad transaction: %s", transaction_id)
-                    emit_progress(progress, "warning", "Skipped known bad transaction.", {"transaction_id": transaction_id})
-                    continue
-
-                payment = SLAPayment(transaction_id=transaction_id, sql_conn=sql_conn, oracle_conn=oracle_conn)
-                try:
-                    payment.process_from_transaction()
-                    logging.info(
-                        "Processed Transaction: %s | Old App: %s | App: %s",
-                        transaction_id,
-                        payment.old_app_number,
-                        payment.app_number,
-                    )
-                    emit_progress(
-                        progress,
-                        "success",
-                        "Transaction processed and clean JSON written.",
-                        {
-                            "transaction_id": transaction_id,
-                            "old_app_number": payment.old_app_number,
-                            "clean_json_path": str(payment.clean_json_path) if payment.clean_json_path else "",
-                        },
-                    )
-                except Exception as exc:
-                    payment.status = "failed"
-                    payment.message = str(exc)
-                    logging.exception("Failed processing transaction %s: %s", transaction_id, exc)
-                    emit_progress(progress, "error", "Transaction failed.", {"transaction_id": transaction_id, "error": str(exc)})
-                processed_transactions.append(payment)
-
+        processed_transactions, skipped_transactions = self._process_transactions(transactions, progress)
         log_path = write_reprocess_log(processed_transactions)
         logging.info("SLA Payment Automation Complete")
         emit_progress(progress, "success", "Email date automation complete.", {"log_path": str(log_path)})
         return self._build_result(
             mode="email_date",
             source={"report_date": report_date.strftime("%m/%d/%Y")},
+            attachments=attachments,
+            requested_items=transactions,
+            processed_transactions=processed_transactions,
+            skipped_transactions=skipped_transactions,
+            log_path=log_path,
+        )
+
+    def run_from_existing_attachments(self, progress: ProgressCallback | None = None) -> dict[str, Any]:
+        configure_payment_logging()
+        emit_progress(progress, "info", "Starting automation from existing app-local XLSX attachments.")
+        attachments = sorted(ATTACHMENTS_DIR.glob("*.xlsx"))
+        emit_progress(progress, "info", "Found existing XLSX attachments.", {"count": len(attachments)})
+        if not attachments:
+            raise FileNotFoundError(f"No XLSX files found in {ATTACHMENTS_DIR}")
+
+        emit_progress(progress, "info", "Reading XLSX reports for Transaction ID values.")
+        excel_reader = ExcelReader(ATTACHMENTS_DIR)
+        transactions = excel_reader.read_reports()
+        emit_progress(progress, "info", "Collected unique transaction IDs.", {"count": len(transactions)})
+        processed_transactions, skipped_transactions = self._process_transactions(transactions, progress)
+
+        log_path = write_reprocess_log(processed_transactions)
+        emit_progress(progress, "success", "Existing attachment automation complete.", {"log_path": str(log_path)})
+        return self._build_result(
+            mode="existing_attachments",
+            source={"attachments_dir": str(ATTACHMENTS_DIR)},
             attachments=attachments,
             requested_items=transactions,
             processed_transactions=processed_transactions,
@@ -774,6 +703,56 @@ class SLAPaymentAutomationRunner:
             skipped_transactions=[],
             log_path=log_path,
         )
+
+    def _process_transactions(
+        self,
+        transactions: list[str],
+        progress: ProgressCallback | None = None,
+    ) -> tuple[list[SLAPayment], list[str]]:
+        processed_transactions: list[SLAPayment] = []
+        skipped_transactions: list[str] = []
+        emit_progress(progress, "info", "Opening SQL Server and Oracle read-only connections.")
+        with get_sql_connection() as sql_conn, get_oracle_connection() as oracle_conn:
+            for index, transaction_id in enumerate(transactions, start=1):
+                emit_progress(
+                    progress,
+                    "info",
+                    "Processing transaction.",
+                    {"index": index, "total": len(transactions), "transaction_id": transaction_id},
+                )
+                if transaction_id in BAD_TRANSACTIONS:
+                    skipped_transactions.append(transaction_id)
+                    logging.warning("Skipping bad transaction: %s", transaction_id)
+                    emit_progress(progress, "warning", "Skipped known bad transaction.", {"transaction_id": transaction_id})
+                    continue
+
+                payment = SLAPayment(transaction_id=transaction_id, sql_conn=sql_conn, oracle_conn=oracle_conn)
+                try:
+                    payment.process_from_transaction()
+                    logging.info(
+                        "Processed Transaction: %s | Old App: %s | App: %s",
+                        transaction_id,
+                        payment.old_app_number,
+                        payment.app_number,
+                    )
+                    emit_progress(
+                        progress,
+                        "success",
+                        "Transaction processed and clean JSON written.",
+                        {
+                            "transaction_id": transaction_id,
+                            "old_app_number": payment.old_app_number,
+                            "clean_json_path": str(payment.clean_json_path) if payment.clean_json_path else "",
+                        },
+                    )
+                except Exception as exc:
+                    payment.status = "failed"
+                    payment.message = str(exc)
+                    logging.exception("Failed processing transaction %s: %s", transaction_id, exc)
+                    emit_progress(progress, "error", "Transaction failed.", {"transaction_id": transaction_id, "error": str(exc)})
+                processed_transactions.append(payment)
+
+        return processed_transactions, skipped_transactions
 
     def _build_result(
         self,
