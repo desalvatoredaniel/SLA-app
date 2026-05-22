@@ -1580,6 +1580,21 @@ body {
   padding: 0.62rem 0.7rem;
 }
 
+.worker-run-card input[type='file'] {
+  min-height: 0;
+  cursor: pointer;
+}
+
+.worker-run-card input[type='file']::file-selector-button {
+  margin-right: 0.7rem;
+  border: 1px solid rgba(53, 211, 255, 0.38);
+  border-radius: 0.42rem;
+  background: rgba(37, 99, 235, 0.28);
+  color: #c8f3ff;
+  padding: 0.42rem 0.62rem;
+  font: inherit;
+}
+
 .worker-run-card input {
   min-height: 2.45rem;
 }
@@ -1597,8 +1612,31 @@ body {
 
 .worker-run-actions {
   display: grid;
-  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.55rem;
+}
+
+.upload-run-card {
+  border-color: rgba(73, 228, 138, 0.28);
+}
+
+.upload-status {
+  margin: 0;
+  color: #8ea2b7;
+  font-size: 0.7rem;
+  overflow-wrap: anywhere;
+}
+
+.upload-status.success {
+  color: #8ff0b6;
+}
+
+.upload-status.error {
+  color: #fca5a5;
+}
+
+.upload-status.processing {
+  color: #9ee9ff;
 }
 
 .queue-preview {

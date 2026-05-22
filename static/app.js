@@ -471,12 +471,16 @@
     const emailRunForm = document.querySelector('[data-email-run-form]');
     const emailDateInput = document.querySelector('[data-email-date-input]');
     const outlookTestButton = document.querySelector('[data-outlook-test-button]');
+    const existingAttachmentsButton = document.querySelector('[data-existing-attachments-button]');
+    const reportUploadForm = document.querySelector('[data-report-upload-form]');
+    const reportUploadInput = document.querySelector('[data-report-upload-input]');
+    const reportUploadStatus = document.querySelector('[data-report-upload-status]');
     const appRunForm = document.querySelector('[data-app-run-form]');
     const appIdForm = document.querySelector('[data-app-id-form]');
     const appIdInput = document.querySelector('[data-app-id-input]');
     const runResults = document.querySelector('[data-run-results]');
     const runStatus = document.querySelector('[data-run-status]');
-    const runButtons = Array.from(document.querySelectorAll('[data-email-run-form] button, [data-app-run-form] button, [data-outlook-test-button]'));
+    const runButtons = Array.from(document.querySelectorAll('[data-email-run-form] button, [data-app-run-form] button, [data-outlook-test-button], [data-existing-attachments-button], [data-report-upload-form] button'));
     let runPollTimer = null;
 
     if (!runResults) {
@@ -568,6 +572,14 @@
       runButtons.forEach((button) => {
         button.disabled = isDisabled;
       });
+    }
+
+    function setUploadStatus(message, state) {
+      if (!reportUploadStatus) {
+        return;
+      }
+      reportUploadStatus.textContent = message;
+      reportUploadStatus.className = `upload-status ${state || ''}`.trim();
     }
 
     function getWorkerStepIndex(events) {
@@ -855,6 +867,48 @@
     if (outlookTestButton) {
       outlookTestButton.addEventListener('click', async () => {
         await runAutomation(null, '/api/payments/test-outlook', {});
+      });
+    }
+
+    if (existingAttachmentsButton) {
+      existingAttachmentsButton.addEventListener('click', async () => {
+        await runAutomation(null, '/api/payments/run-existing-attachments', {});
+      });
+    }
+
+    if (reportUploadForm && reportUploadInput) {
+      reportUploadForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const file = reportUploadInput.files && reportUploadInput.files[0];
+        if (!file) {
+          setUploadStatus('Choose an .xlsx report first.', 'error');
+          return;
+        }
+
+        const formData = new FormData();
+        formData.append('report', file);
+        setUploadStatus('Uploading report into attachments...', 'processing');
+
+        try {
+          const response = await fetch('/api/payments/upload-report', {
+            method: 'POST',
+            body: formData,
+          });
+          const body = await response.json();
+          if (!response.ok || !body.ok) {
+            throw new Error(body.error || 'Upload failed.');
+          }
+          setUploadStatus(`Uploaded ${body.filename}`, 'success');
+          runResults.innerHTML = `
+            <div class="automation-result-paths">
+              <p><span>Uploaded report</span><b class="mono">${escapeHtml(body.path || '')}</b></p>
+              <p><span>Next step</span><b>Click Run Saved XLSX to process this file.</b></p>
+            </div>
+          `;
+          refreshIcons();
+        } catch (error) {
+          setUploadStatus(error.message || 'Upload failed.', 'error');
+        }
       });
     }
 

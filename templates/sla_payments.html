@@ -52,11 +52,27 @@
             <i data-lucide="mail-check"></i>
             Test Outlook
           </button>
+          <button class="btn" type="button" data-existing-attachments-button>
+            <i data-lucide="folder-input"></i>
+            Run Saved XLSX
+          </button>
           <button class="btn primary" type="submit">
             <i data-lucide="play"></i>
             Run Email Date
           </button>
         </div>
+      </form>
+
+      <form class="worker-run-card upload-run-card" data-report-upload-form>
+        <label>
+          <span>Upload saved report</span>
+          <input name="report" type="file" accept=".xlsx,.xls" data-report-upload-input />
+        </label>
+        <button class="btn" type="submit">
+          <i data-lucide="upload"></i>
+          Upload XLSX
+        </button>
+        <p class="upload-status" data-report-upload-status>Saved reports land in the attachments folder.</p>
       </form>
 
       <form class="worker-run-card" data-app-run-form>

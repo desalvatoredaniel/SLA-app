@@ -26,6 +26,7 @@ from urllib import request as urllib_request
 from uuid import uuid4
 
 from flask import Flask, jsonify, redirect, render_template, request, url_for
+from werkzeug.utils import secure_filename
 
 from sla_payment_automation import (
     ATTACHMENTS_DIR,
@@ -71,6 +72,7 @@ _release_tracker_thread: threading.Thread | None = None
 _release_tracker_start_lock = threading.Lock()
 PAYMENT_AUTOMATION_LOCK = threading.RLock()
 payment_automation_runs: dict[str, dict[str, Any]] = {}
+PAYMENT_REPORT_EXTENSIONS = {".xlsx", ".xls"}
 
 
 def _env_bool(key: str, default: bool) -> bool:
@@ -3535,6 +3537,45 @@ def test_payment_outlook_connection():
         lambda progress: SLAPaymentAutomationRunner().test_outlook_connection(progress=progress),
     )
     return jsonify(run), 202
+
+
+@app.post("/api/payments/run-existing-attachments")
+def run_payment_existing_attachment_automation():
+    run = _start_payment_automation_run(
+        "existing_attachments",
+        {"attachments_dir": str(ATTACHMENTS_DIR)},
+        lambda progress: SLAPaymentAutomationRunner().run_from_existing_attachments(progress=progress),
+    )
+    return jsonify(run), 202
+
+
+@app.post("/api/payments/upload-report")
+def upload_payment_report():
+    uploaded_file = request.files.get("report")
+    if uploaded_file is None or not str(uploaded_file.filename or "").strip():
+        return jsonify({"ok": False, "error": "Choose an Excel report to upload."}), 400
+
+    original_name = str(uploaded_file.filename or "").strip()
+    suffix = Path(original_name).suffix.lower()
+    if suffix not in PAYMENT_REPORT_EXTENSIONS:
+        return jsonify({"ok": False, "error": "Upload an .xlsx or .xls payment report."}), 400
+
+    safe_name = secure_filename(original_name) or f"payment_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}{suffix}"
+    ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    destination = ATTACHMENTS_DIR / safe_name
+
+    if destination.exists():
+        destination = ATTACHMENTS_DIR / f"{destination.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{destination.suffix}"
+
+    uploaded_file.save(destination)
+    return jsonify(
+        {
+            "ok": True,
+            "filename": destination.name,
+            "path": str(destination),
+            "attachments_dir": str(ATTACHMENTS_DIR),
+        }
+    )
 
 
 @app.post("/api/payments/run-app-ids")
