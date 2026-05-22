@@ -997,6 +997,7 @@ body {
   display: grid;
   gap: 0.45rem;
   margin-top: 0.25rem;
+  min-width: 0;
 }
 
 .clean-json-head {
@@ -1014,7 +1015,9 @@ body {
 
 .clean-json-textarea {
   width: 100%;
+  max-width: 100%;
   min-height: 260px;
+  max-height: 360px;
   border: 1px solid rgba(34, 211, 238, 0.22);
   border-radius: 0.62rem;
   background: rgba(2, 6, 23, 0.66);
@@ -1023,7 +1026,9 @@ body {
   font-size: 0.72rem;
   line-height: 1.45;
   resize: vertical;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow: auto;
+  overflow-wrap: anywhere;
 }
 
 .processed-apps-panel {
@@ -1061,7 +1066,7 @@ body {
 
 .processed-app-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 30rem), 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.75rem;
 }
 
@@ -1069,6 +1074,8 @@ body {
   display: grid;
   gap: 0.72rem;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   padding: 0.85rem;
   border: 1px solid rgba(36, 68, 91, 0.76);
   border-radius: 0.72rem;
@@ -1101,6 +1108,7 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
+  min-width: 0;
 }
 
 .processed-app-index {
@@ -1110,6 +1118,10 @@ body {
 
 .processed-app-title-row {
   align-items: start;
+}
+
+.processed-app-title-row > div {
+  min-width: 0;
 }
 
 .processed-app-title-row p,
@@ -1137,12 +1149,13 @@ body {
 }
 
 .app-number-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: stretch;
 }
 
 .app-number-pair div {
   min-width: 0;
-  flex: 1;
   padding: 0.62rem;
   border: 1px solid rgba(36, 68, 91, 0.7);
   border-radius: 0.58rem;
@@ -1167,16 +1180,18 @@ body {
 }
 
 .processed-app-paths p {
+  display: grid;
+  grid-template-columns: minmax(6rem, 0.26fr) minmax(0, 1fr);
   margin: 0;
   align-items: start;
 }
 
 .processed-app-paths b {
   min-width: 0;
-  max-width: 72%;
+  max-width: 100%;
   color: #bae6fd;
   font-size: 0.66rem;
-  text-align: right;
+  text-align: left;
   overflow-wrap: anywhere;
 }
 
@@ -2305,6 +2320,11 @@ body {
 
   .worker-terminal {
     display: none;
+  }
+
+  .app-number-pair,
+  .processed-app-paths p {
+    grid-template-columns: 1fr;
   }
 }
 
