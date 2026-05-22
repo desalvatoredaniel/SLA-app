@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import subprocess
+import sys
 from importlib import import_module
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,6 +21,7 @@ NEW_JSON_DIR = BASE_DIR / "new_json"
 LOG_DIR = BASE_DIR / "logs"
 DATABASE_MODE = "read_only_selects_only"
 OUTLOOK_CONNECT_MODE = "dispatch"
+OUTLOOK_HELPER_TIMEOUT_SECONDS = 12
 
 BAD_TRANSACTIONS = {
     "050625C19-CAC0351F-4D17-4132-AC05-D388CBEEB25A",
@@ -534,6 +537,136 @@ class OutlookEmailReader:
         return saved_files
 
 
+def _emit_helper_progress(level: str, message: str, details: dict[str, Any] | None = None) -> None:
+    print(
+        json.dumps(
+            {
+                "type": "event",
+                "level": level,
+                "message": message,
+                "details": details or {},
+            }
+        ),
+        flush=True,
+    )
+
+
+def _parse_helper_stdout(stdout: str, progress: ProgressCallback | None = None) -> dict[str, Any] | None:
+    result: dict[str, Any] | None = None
+    for line in stdout.splitlines():
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            if line.strip():
+                emit_progress(progress, "info", "Outlook helper output.", {"line": line})
+            continue
+
+        payload_type = payload.get("type")
+        if payload_type == "event":
+            emit_progress(
+                progress,
+                str(payload.get("level") or "info"),
+                str(payload.get("message") or ""),
+                payload.get("details") if isinstance(payload.get("details"), dict) else {},
+            )
+        elif payload_type == "result":
+            result = payload
+
+    return result
+
+
+def _run_outlook_helper(args: list[str], progress: ProgressCallback | None = None) -> dict[str, Any]:
+    command = [sys.executable, str(Path(__file__).resolve()), *args]
+    emit_progress(
+        progress,
+        "info",
+        "Starting isolated Outlook helper process.",
+        {"timeout_seconds": OUTLOOK_HELPER_TIMEOUT_SECONDS},
+    )
+
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=OUTLOOK_HELPER_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode(errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+
+        _parse_helper_stdout(stdout, progress)
+        emit_progress(
+            progress,
+            "error",
+            "Outlook helper timed out before completing.",
+            {"timeout_seconds": OUTLOOK_HELPER_TIMEOUT_SECONDS, "stderr": stderr.strip()},
+        )
+        raise TimeoutError(
+            "Outlook did not respond within "
+            f"{OUTLOOK_HELPER_TIMEOUT_SECONDS} seconds. Open Classic Outlook in this Windows session, "
+            "dismiss any profile/login/security prompts, then try again."
+        ) from exc
+
+    result = _parse_helper_stdout(completed.stdout or "", progress)
+    if completed.stderr:
+        emit_progress(progress, "warning", "Outlook helper stderr output.", {"stderr": completed.stderr.strip()})
+
+    if completed.returncode != 0:
+        message = "Outlook helper failed."
+        if result and result.get("error"):
+            message = str(result["error"])
+        raise RuntimeError(message)
+
+    if result is None:
+        raise RuntimeError("Outlook helper finished without returning a result.")
+
+    return result
+
+
+def download_outlook_attachments_with_timeout(
+    report_date: datetime,
+    progress: ProgressCallback | None = None,
+) -> list[Path]:
+    result = _run_outlook_helper(
+        ["--download-outlook-attachments", report_date.strftime("%Y-%m-%d")],
+        progress=progress,
+    )
+    attachments = [Path(path) for path in result.get("attachments", []) if path]
+    if not attachments:
+        raise FileNotFoundError("Outlook helper completed but did not return saved attachments.")
+    return attachments
+
+
+def test_outlook_connection_with_timeout(progress: ProgressCallback | None = None) -> dict[str, Any]:
+    result = _run_outlook_helper(["--test-outlook-connection"], progress=progress)
+    return {
+        "ok": True,
+        "mode": "outlook_connection_test",
+        "base_dir": str(BASE_DIR),
+        "attachments": [],
+        "requested_count": 1,
+        "processed_count": 1,
+        "skipped_count": 0,
+        "skipped_transactions": [],
+        "database_mode": DATABASE_MODE,
+        "clean_json_dir": str(NEW_JSON_DIR),
+        "log_path": str(LOG_DIR / "sla_payment.log"),
+        "results": [
+            {
+                "Status": "processed",
+                "Message": str(result.get("message") or "Outlook COM connection is available."),
+                "Database Mode": DATABASE_MODE,
+            }
+        ],
+    }
+
+
 class ExcelReader:
     def __init__(self, folder_path: Path):
         self.folder_path = Path(folder_path)
@@ -560,15 +693,13 @@ class ExcelReader:
 
 
 def get_sql_connection() -> Any:
-    modules = import_required_modules("pyodbc", "db_config")
+    modules = import_required_modules("pyodbc")
     pyodbc = modules["pyodbc"]
-    db_config = modules["db_config"]
     return pyodbc.connect(
         "Driver={SQL Server};"
         r"Server=EDS0085PW5SQLV\P17SO50364,50364;"
         "Database=Prod_SharedServices;"
-        f"UID={db_config.DBUN};"
-        f"PWD={db_config.DBPW};"
+        "Trusted_Connection=yes;"
     )
 
 
@@ -600,9 +731,8 @@ class SLAPaymentAutomationRunner:
 
         subject_text = build_report_subject(report_date)
         emit_progress(progress, "info", "Searching Outlook for SLA payment report email.", {"subject": subject_text})
-        emit_progress(progress, "info", "Creating Outlook reader using original script Dispatch path.")
-        email_reader = OutlookEmailReader(ATTACHMENTS_DIR, progress=progress)
-        attachments = email_reader.retrieve_attachments(report_date, progress=progress)
+        emit_progress(progress, "info", "Downloading Outlook attachments through timeout-protected helper.")
+        attachments = download_outlook_attachments_with_timeout(report_date, progress=progress)
         emit_progress(progress, "info", "Downloaded Outlook attachments.", {"count": len(attachments)})
 
         emit_progress(progress, "info", "Reading XLSX reports for Transaction ID values.")
@@ -623,6 +753,14 @@ class SLAPaymentAutomationRunner:
             skipped_transactions=skipped_transactions,
             log_path=log_path,
         )
+
+    def test_outlook_connection(self, progress: ProgressCallback | None = None) -> dict[str, Any]:
+        configure_payment_logging()
+        logging.info("Starting SLA Payment Outlook connection test")
+        emit_progress(progress, "info", "Starting Outlook connection test.")
+        result = test_outlook_connection_with_timeout(progress=progress)
+        emit_progress(progress, "success", "Outlook connection test complete.")
+        return result
 
     def run_from_existing_attachments(self, progress: ProgressCallback | None = None) -> dict[str, Any]:
         configure_payment_logging()
@@ -780,3 +918,67 @@ class SLAPaymentAutomationRunner:
             "log_path": str(log_path),
             "results": [payment.to_log_dict() | {"Message": payment.message} for payment in processed_transactions],
         }
+
+
+def _run_helper_cli() -> int:
+    ensure_payment_dirs()
+    configure_payment_logging()
+    pythoncom = None
+    try:
+        pythoncom = import_module("pythoncom")
+        pythoncom.CoInitialize()
+        _emit_helper_progress("info", "Python COM initialized in Outlook helper process.")
+    except ImportError:
+        pythoncom = None
+
+    try:
+        if len(sys.argv) >= 2 and sys.argv[1] == "--test-outlook-connection":
+            try:
+                OutlookEmailReader(ATTACHMENTS_DIR, progress=_emit_helper_progress)
+                print(
+                    json.dumps(
+                        {
+                            "type": "result",
+                            "ok": True,
+                            "message": "Outlook COM object, MAPI namespace, and default inbox opened.",
+                        }
+                    ),
+                    flush=True,
+                )
+                return 0
+            except Exception as exc:
+                logging.exception("Outlook connection test failed: %s", exc)
+                _emit_helper_progress("error", "Outlook connection test failed.", {"error": str(exc)})
+                print(json.dumps({"type": "result", "ok": False, "error": str(exc)}), flush=True)
+                return 1
+
+        if len(sys.argv) >= 3 and sys.argv[1] == "--download-outlook-attachments":
+            try:
+                report_date = parse_report_date(sys.argv[2])
+                reader = OutlookEmailReader(ATTACHMENTS_DIR, progress=_emit_helper_progress)
+                attachments = reader.retrieve_attachments(report_date, progress=_emit_helper_progress)
+                print(
+                    json.dumps(
+                        {
+                            "type": "result",
+                            "ok": True,
+                            "attachments": [str(path) for path in attachments],
+                        }
+                    ),
+                    flush=True,
+                )
+                return 0
+            except Exception as exc:
+                logging.exception("Outlook attachment helper failed: %s", exc)
+                _emit_helper_progress("error", "Outlook attachment helper failed.", {"error": str(exc)})
+                print(json.dumps({"type": "result", "ok": False, "error": str(exc)}), flush=True)
+                return 1
+
+        return 0
+    finally:
+        if pythoncom is not None:
+            pythoncom.CoUninitialize()
+
+
+if __name__ == "__main__":
+    raise SystemExit(_run_helper_cli())

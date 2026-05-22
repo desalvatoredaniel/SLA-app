@@ -3527,6 +3527,16 @@ def run_payment_email_date_automation():
     return jsonify(run), 202
 
 
+@app.post("/api/payments/test-outlook")
+def test_payment_outlook_connection():
+    run = _start_payment_automation_run(
+        "outlook_connection_test",
+        {"target": "Outlook.Application COM"},
+        lambda progress: SLAPaymentAutomationRunner().test_outlook_connection(progress=progress),
+    )
+    return jsonify(run), 202
+
+
 @app.post("/api/payments/run-app-ids")
 def run_payment_app_id_automation():
     payload = request.get_json(silent=True) or {}

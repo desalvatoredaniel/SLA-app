@@ -470,12 +470,13 @@
   function initSlaPayments() {
     const emailRunForm = document.querySelector('[data-email-run-form]');
     const emailDateInput = document.querySelector('[data-email-date-input]');
+    const outlookTestButton = document.querySelector('[data-outlook-test-button]');
     const appRunForm = document.querySelector('[data-app-run-form]');
     const appIdForm = document.querySelector('[data-app-id-form]');
     const appIdInput = document.querySelector('[data-app-id-input]');
     const runResults = document.querySelector('[data-run-results]');
     const runStatus = document.querySelector('[data-run-status]');
-    const runButtons = Array.from(document.querySelectorAll('[data-email-run-form] button, [data-app-run-form] button'));
+    const runButtons = Array.from(document.querySelectorAll('[data-email-run-form] button, [data-app-run-form] button, [data-outlook-test-button]'));
     let runPollTimer = null;
 
     if (!runResults) {
@@ -769,6 +770,12 @@
         await runAutomation(emailRunForm, '/api/payments/run-email-date', {
           report_date: emailDateInput.value,
         });
+      });
+    }
+
+    if (outlookTestButton) {
+      outlookTestButton.addEventListener('click', async () => {
+        await runAutomation(null, '/api/payments/test-outlook', {});
       });
     }
 
