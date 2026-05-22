@@ -652,6 +652,90 @@
       `;
     }
 
+    function statusClass(status) {
+      return status === 'processed' ? 'completed' : status || 'failed';
+    }
+
+    function renderProcessedApps(results) {
+      const safeResults = Array.isArray(results) ? results : [];
+      if (!safeResults.length) {
+        return `
+          <div class="processed-apps-empty">
+            <i data-lucide="inbox"></i>
+            <p>No application records were returned for this run.</p>
+          </div>
+        `;
+      }
+
+      return `
+        <section class="processed-apps-panel">
+          <div class="processed-apps-header">
+            <div>
+              <p>Processed Apps</p>
+              <h4>Review results before manual DB upload</h4>
+            </div>
+            <span class="mono">${safeResults.length} item${safeResults.length === 1 ? '' : 's'}</span>
+          </div>
+          <div class="processed-app-grid">
+            ${safeResults
+              .map((item, index) => {
+                const status = item.Status || 'unknown';
+                const hasJson = Boolean(item['Clean JSON']);
+                return `
+                  <article class="processed-app-card ${escapeHtml(statusClass(status))}">
+                    <div class="processed-app-topline">
+                      <span class="processed-app-index mono">#${index + 1}</span>
+                      <span class="status-pill ${escapeHtml(statusClass(status))}">
+                        ${escapeHtml(status).toUpperCase()}
+                      </span>
+                    </div>
+                    <div class="processed-app-title-row">
+                      <div>
+                        <p>Old App Number</p>
+                        <b class="mono">${escapeHtml(item['Old App Number'] || 'Not resolved')}</b>
+                      </div>
+                      <i data-lucide="${status === 'ignored' ? 'circle-minus' : status === 'failed' ? 'triangle-alert' : hasJson ? 'file-check-2' : 'circle-dashed'}"></i>
+                    </div>
+                    <div class="app-number-pair">
+                      <div>
+                        <span>Current App</span>
+                        <strong class="mono">${escapeHtml(item['App Number'] || 'Missing')}</strong>
+                      </div>
+                      <div>
+                        <span>Transaction</span>
+                        <strong class="mono">${escapeHtml(item['Transaction ID'] || 'Not found')}</strong>
+                      </div>
+                    </div>
+                    <div class="processed-app-paths">
+                      <p><span>Clean JSON</span><b class="mono">${escapeHtml(item['Clean JSON Path'] || 'Not generated')}</b></p>
+                      <p><span>Backup JSON</span><b class="mono">${escapeHtml(item['Backup JSON Path'] || 'Not generated')}</b></p>
+                    </div>
+                    ${
+                      hasJson
+                        ? `
+                          <div class="clean-json-copy">
+                            <div class="clean-json-head">
+                              <p>Copy-ready cleaned JSON</p>
+                              <button class="btn primary" type="button" data-copy-json>
+                                <i data-lucide="copy"></i>
+                                Copy JSON
+                              </button>
+                            </div>
+                            <textarea class="clean-json-textarea mono" readonly>${escapeHtml(item['Clean JSON'])}</textarea>
+                          </div>
+                        `
+                        : ''
+                    }
+                    <p class="processed-app-message">${escapeHtml(item.Message || item['Base URL'] || 'Processed through the SLA payment automation flow.')}</p>
+                  </article>
+                `;
+              })
+              .join('')}
+          </div>
+        </section>
+      `;
+    }
+
     function renderRunProgress(run) {
       setRunStatus((run.status || 'RUNNING').toUpperCase(), run.status === 'failed' ? 'error' : 'processing');
       runResults.innerHTML = `
@@ -705,44 +789,7 @@
           'Worker run complete',
           'Review every processed app, ignored NA case, and clean JSON output below.',
         )}
-        <div class="app-id-result-list">
-          ${results
-            .map(
-              (item) => `
-                <article class="app-id-result">
-                  <div class="app-id-result-head">
-                    <span class="mono token">${escapeHtml(item['Old App Number'] || item['Transaction ID'] || 'unknown')}</span>
-                    <span class="status-pill ${escapeHtml(item.Status === 'processed' ? 'completed' : item.Status || 'failed')}">
-                      ${escapeHtml(item.Status || 'unknown').toUpperCase()}
-                    </span>
-                  </div>
-                  <code>Transaction ID: ${escapeHtml(item['Transaction ID'] || '')}</code>
-                  <code>Old App Number: ${escapeHtml(item['Old App Number'] || '')}</code>
-                  <code>Current App Number: ${escapeHtml(item['App Number'] || '')}</code>
-                  <code>Clean JSON Path: ${escapeHtml(item['Clean JSON Path'] || '')}</code>
-                  <code>Backup JSON Path: ${escapeHtml(item['Backup JSON Path'] || '')}</code>
-                  ${
-                    item['Clean JSON']
-                      ? `
-                        <div class="clean-json-copy">
-                          <div class="clean-json-head">
-                            <p>Clean JSON ready to copy</p>
-                            <button class="btn" type="button" data-copy-json>
-                              <i data-lucide="copy"></i>
-                              Copy JSON
-                            </button>
-                          </div>
-                          <textarea class="clean-json-textarea mono" readonly>${escapeHtml(item['Clean JSON'])}</textarea>
-                        </div>
-                      `
-                      : ''
-                  }
-                  <p>${escapeHtml(item.Message || item['Base URL'] || 'Processed through the SLA payment automation flow.')}</p>
-                </article>
-              `,
-            )
-            .join('')}
-        </div>
+        ${renderProcessedApps(results)}
       `;
       refreshIcons();
     }
