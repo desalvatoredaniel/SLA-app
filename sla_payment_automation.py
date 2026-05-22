@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
-import os
+import queue
 import re
+import threading
 from importlib import import_module
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -13,12 +14,14 @@ from urllib.parse import parse_qs, urlparse
 
 DEFAULT_BASE_DIR = Path(__file__).resolve().parent / "instance" / "sla_payment_automation"
 
-BASE_DIR = Path(os.getenv("SLA_PAYMENT_AUTOMATION_BASE_DIR", str(DEFAULT_BASE_DIR)))
+BASE_DIR = DEFAULT_BASE_DIR
 ATTACHMENTS_DIR = BASE_DIR / "attachments"
 BACKUP_DIR = BASE_DIR / "json_back_up"
 NEW_JSON_DIR = BASE_DIR / "new_json"
 LOG_DIR = BASE_DIR / "logs"
 DATABASE_MODE = "read_only_selects_only"
+OUTLOOK_TIMEOUT_SECONDS = 90
+OUTLOOK_CONNECT_MODE = "dispatch"
 
 BAD_TRANSACTIONS = {
     "050625C19-CAC0351F-4D17-4132-AC05-D388CBEEB25A",
@@ -414,11 +417,39 @@ class OutlookEmailReader:
         emit_progress(progress, "info", "Initializing Outlook COM connection.")
         modules = import_required_modules("win32com.client")
         win32_client = modules["win32com.client"]
-        self.outlook_app = win32_client.Dispatch("Outlook.Application")
+        self.outlook_app = self._connect_outlook_app(win32_client, progress)
+        emit_progress(progress, "info", "Opening Outlook MAPI namespace.")
         self.namespace = self.outlook_app.GetNamespace("MAPI")
+        emit_progress(progress, "info", "Outlook MAPI namespace opened.")
+        emit_progress(progress, "info", "Opening default Outlook inbox.")
         self.inbox = self.namespace.GetDefaultFolder(6)
         self.attachment_folder_path = Path(attachment_folder_path)
         emit_progress(progress, "info", "Outlook inbox initialized.")
+
+    def _connect_outlook_app(self, win32_client: Any, progress: ProgressCallback | None = None) -> Any:
+        mode = OUTLOOK_CONNECT_MODE if OUTLOOK_CONNECT_MODE in {"active", "dispatch", "auto"} else "dispatch"
+        emit_progress(progress, "info", "Using Outlook COM connection mode.", {"mode": mode})
+
+        if mode in {"active", "auto"}:
+            try:
+                emit_progress(progress, "info", "Connecting to active Outlook.Application COM object.")
+                outlook_app = win32_client.GetActiveObject("Outlook.Application")
+                emit_progress(progress, "success", "Connected to active Outlook.Application COM object.")
+                return outlook_app
+            except Exception as exc:
+                logging.warning("Could not connect to active Outlook COM object: %s", exc)
+                emit_progress(progress, "warning", "Could not connect to active Outlook.Application.", {"error": str(exc)})
+                if mode == "active":
+                    raise RuntimeError(
+                        "Could not connect to a running Classic Outlook instance. "
+                        "Open Classic Outlook with the correct profile in this same Windows user session, "
+                        "dismiss any login/security/profile prompts, then run the automation again."
+                    ) from exc
+
+        emit_progress(progress, "info", "Dispatching Outlook.Application COM object using original script behavior.")
+        outlook_app = win32_client.Dispatch("Outlook.Application")
+        emit_progress(progress, "info", "Outlook.Application COM object dispatched.")
+        return outlook_app
 
     def retrieve_attachments(self, report_date: datetime | None = None, progress: ProgressCallback | None = None) -> list[Path]:
         if report_date is None:
@@ -504,6 +535,62 @@ class OutlookEmailReader:
         return saved_files
 
 
+def retrieve_outlook_attachments_with_timeout(
+    report_date: datetime,
+    progress: ProgressCallback | None = None,
+) -> list[Path]:
+    result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+
+    def worker() -> None:
+        pythoncom = None
+        try:
+            try:
+                pythoncom = import_module("pythoncom")
+                pythoncom.CoInitialize()
+                emit_progress(progress, "info", "Initialized COM for Outlook worker thread.")
+            except ImportError:
+                pythoncom = None
+
+            reader = OutlookEmailReader(ATTACHMENTS_DIR, progress=progress)
+            result_queue.put(("ok", reader.retrieve_attachments(report_date, progress=progress)))
+        except Exception as exc:
+            result_queue.put(("error", exc))
+        finally:
+            if pythoncom is not None:
+                pythoncom.CoUninitialize()
+
+    emit_progress(
+        progress,
+        "info",
+        "Starting timeout-protected Outlook attachment retrieval.",
+        {"timeout_seconds": OUTLOOK_TIMEOUT_SECONDS},
+    )
+    thread = threading.Thread(target=worker, name="sla-payment-outlook-worker", daemon=True)
+    thread.start()
+    thread.join(OUTLOOK_TIMEOUT_SECONDS)
+
+    if thread.is_alive():
+        message = (
+            "Outlook did not respond while initializing/searching for the SLA payment report. "
+            "Check that Outlook is open, the correct profile is signed in, no modal/security prompt is blocking Outlook, "
+            f"and try again. Timeout: {OUTLOOK_TIMEOUT_SECONDS} seconds."
+        )
+        logging.error(message)
+        emit_progress(progress, "error", "Outlook attachment retrieval timed out.", {"timeout_seconds": OUTLOOK_TIMEOUT_SECONDS})
+        raise TimeoutError(message)
+
+    if result_queue.empty():
+        message = "Outlook attachment retrieval exited without returning a result."
+        logging.error(message)
+        emit_progress(progress, "error", message)
+        raise RuntimeError(message)
+
+    status, value = result_queue.get()
+    if status == "error":
+        raise value
+    return value
+
+
 class ExcelReader:
     def __init__(self, folder_path: Path):
         self.folder_path = Path(folder_path)
@@ -570,8 +657,7 @@ class SLAPaymentAutomationRunner:
 
         subject_text = build_report_subject(report_date)
         emit_progress(progress, "info", "Searching Outlook for SLA payment report email.", {"subject": subject_text})
-        email_reader = OutlookEmailReader(ATTACHMENTS_DIR, progress=progress)
-        attachments = email_reader.retrieve_attachments(report_date, progress=progress)
+        attachments = retrieve_outlook_attachments_with_timeout(report_date, progress=progress)
         emit_progress(progress, "info", "Downloaded Outlook attachments.", {"count": len(attachments)})
 
         emit_progress(progress, "info", "Reading XLSX reports for Transaction ID values.")
