@@ -34,6 +34,7 @@ from sla_payment_automation import (
     BAD_TRANSACTIONS,
     LOG_DIR,
     NEW_JSON_DIR,
+    DATABASE_MODE,
     AutomationDependencyError,
     SLAPaymentAutomationRunner,
     parse_app_ids,
@@ -3160,6 +3161,7 @@ def payments() -> str:
             "backup_dir": str(BACKUP_DIR),
             "new_json_dir": str(NEW_JSON_DIR),
             "log_dir": str(LOG_DIR),
+            "database_mode": DATABASE_MODE,
             "bad_transactions": sorted(BAD_TRANSACTIONS),
         },
     )

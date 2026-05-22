@@ -20,6 +20,7 @@ ATTACHMENTS_DIR = BASE_DIR / "attachments"
 BACKUP_DIR = BASE_DIR / "json_back_up"
 NEW_JSON_DIR = BASE_DIR / "new_json"
 LOG_DIR = BASE_DIR / "logs"
+DATABASE_MODE = "read_only_selects_only"
 
 BAD_TRANSACTIONS = {
     "050625C19-CAC0351F-4D17-4132-AC05-D388CBEEB25A",
@@ -234,6 +235,8 @@ class SLAPayment:
         self.old_app_number = old_app_number
         self.app_number: str | None = None
         self.json_backup: str | None = None
+        self.backup_path: Path | None = None
+        self.clean_json_path: Path | None = None
         self.status = "pending"
         self.message = ""
 
@@ -321,11 +324,11 @@ class SLAPayment:
             return None
 
         self.json_backup = row[0].read()
-        backup_path = BACKUP_DIR / f"{self.old_app_number}_back_up.json"
-        backup_path.write_text(self.json_backup, encoding="utf-8")
+        self.backup_path = BACKUP_DIR / f"{self.old_app_number}_back_up.json"
+        self.backup_path.write_text(self.json_backup, encoding="utf-8")
 
-        output_path = NEW_JSON_DIR / f"{self.old_app_number}.json"
-        JSONProcessor(input_file=backup_path, output_file=output_path).execute()
+        self.clean_json_path = NEW_JSON_DIR / f"{self.old_app_number}.json"
+        JSONProcessor(input_file=self.backup_path, output_file=self.clean_json_path).execute()
         return self.json_backup
 
     def get_app_number(self) -> str | None:
@@ -376,6 +379,9 @@ class SLAPayment:
             "App Number": self.app_number,
             "Base URL": cleaned_url,
             "Status": self.status,
+            "Backup JSON Path": str(self.backup_path) if self.backup_path else "",
+            "Clean JSON Path": str(self.clean_json_path) if self.clean_json_path else "",
+            "Database Mode": DATABASE_MODE,
         }
 
 
@@ -569,6 +575,8 @@ class SLAPaymentAutomationRunner:
             "mode": mode,
             "source": source,
             "base_dir": str(BASE_DIR),
+            "database_mode": DATABASE_MODE,
+            "clean_json_dir": str(NEW_JSON_DIR),
             "attachments": [str(path) for path in attachments],
             "requested_count": len(requested_items),
             "processed_count": len(processed_transactions),

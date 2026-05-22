@@ -553,6 +553,8 @@
         <div class="automation-result-paths">
           <p><span>Base</span><b class="mono">${escapeHtml(body.base_dir || '')}</b></p>
           <p><span>Log</span><b class="mono">${escapeHtml(body.log_path || '')}</b></p>
+          <p><span>DB mode</span><b class="mono">${escapeHtml(body.database_mode || 'read_only_selects_only')}</b></p>
+          <p><span>Clean JSON folder</span><b class="mono">${escapeHtml(body.clean_json_dir || '')}</b></p>
           ${
             attachments.length
               ? `<p><span>Attachments</span><b class="mono">${attachments.map(escapeHtml).join('<br />')}</b></p>`
@@ -572,6 +574,8 @@
                   </div>
                   <code>Transaction ID: ${escapeHtml(item['Transaction ID'] || '')}</code>
                   <code>Application Number: ${escapeHtml(item['App Number'] || '')}</code>
+                  <code>Clean JSON Path: ${escapeHtml(item['Clean JSON Path'] || '')}</code>
+                  <code>Backup JSON Path: ${escapeHtml(item['Backup JSON Path'] || '')}</code>
                   <p>${escapeHtml(item.Message || item['Base URL'] || 'Processed through the SLA payment automation flow.')}</p>
                 </article>
               `,

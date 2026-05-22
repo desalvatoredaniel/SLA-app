@@ -17,8 +17,8 @@
   </article>
   <article class="panel stat processing">
     <div>
-      <p class="label">Lookup Source</p>
-      <p class="value blue">Request URL</p>
+      <p class="label">Database Mode</p>
+      <p class="value blue">Read Only</p>
     </div>
     <i data-lucide="database"></i>
   </article>
@@ -117,7 +117,7 @@
         <i data-lucide="sparkles"></i>
         <div>
           <h3>Clean JSON</h3>
-          <p>Principal and PQ cleanup rules</p>
+          <p>Write file only, no DB upload</p>
         </div>
       </div>
       <div class="flow-link vertical"><span></span></div>
@@ -159,7 +159,7 @@
           data-app-id-input
         ></textarea>
       </label>
-      <p class="manual-hint">Uses each App ID as OLD_APPLICATION_NUMBER, runs the matching Request URL query, then executes the same Oracle JSON backup, cleanup, and audit flow.</p>
+      <p class="manual-hint">Uses each App ID as OLD_APPLICATION_NUMBER, runs the matching Request URL query, then writes the cleaned JSON file for manual DB upload.</p>
       <div class="button-row">
         <button class="btn primary" type="submit">
           <i data-lucide="play"></i>
@@ -181,6 +181,10 @@
     <div>
       <p>JSON output</p>
       <b class="mono">{{ automation.new_json_dir }}</b>
+    </div>
+    <div>
+      <p>DB write policy</p>
+      <b class="mono">{{ automation.database_mode }}</b>
     </div>
     <div>
       <p>Known skip</p>
